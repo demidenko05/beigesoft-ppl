@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+  <!--See beigesoft-common test DoubleCkeckLockingRiApTest. Assigning fully
+  initialized bean to the class variable is reliable method.-->
+  <Match>
+     <Class name="org.beigesoft.webstore.processor.PrcWebstorePage" />
+     <Bug pattern="DC_DOUBLECHECK" />
+  </Match>
+  <!--Catalog is well synchronized cause double check-->
+  <Match>
+     <Class name="org.beigesoft.webstore.processor.PrcWebstorePage" />
+     <Bug pattern="IS2_INCONSISTENT_SYNC" />
+  </Match>
+  <!--EI_EXPOSE_REP/2 is resource unfriendly approach to avoid object's unexpected changes/replacement.
+  In real program the most of objects (not only Date and arrays) is mutable/replaceable.
+  These are also POJO-unfriendly rules.
+  Using annotation "immutable/non-replaceable" is the best way to implements logic: "do not replace/change
+  mutable object outside or better - by annotated allowChangeImmutableFor[]".-->
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.CustOrder" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.CustOrder" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.CartLn" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.CartLn" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.SerBus" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.SerBus" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.SeSerBus" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.SeSerBus" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.GoodsPlace" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.GoodsPlace" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.ItemInList" />
+     <Bug pattern="EI_EXPOSE_REP" />
+  </Match>
+  <Match>
+     <Class name="org.beigesoft.webstore.persistable.ItemInList" />
+     <Bug pattern="EI_EXPOSE_REP2" />
+  </Match>
+</FindBugsFilter>
