@@ -39,7 +39,9 @@ import org.beigesoft.service.ISrvOrm;
 import org.beigesoft.service.ISrvDatabase;
 import org.beigesoft.webstore.model.EOrdStat;
 import org.beigesoft.webstore.model.EPaymentMethod;
+import org.beigesoft.webstore.model.Purch;
 import org.beigesoft.webstore.persistable.Cart;
+import org.beigesoft.webstore.persistable.CuOrSe;
 import org.beigesoft.webstore.persistable.CustOrder;
 import org.beigesoft.webstore.persistable.CustOrderTxLn;
 import org.beigesoft.webstore.persistable.CustOrderSrvLn;
@@ -67,6 +69,9 @@ import org.beigesoft.webstore.service.ICncOrd;
  * find out all BOOKED orders with ONLINE/PAYPAL method and date is
  * less then 30 minutes from current time. Client application should also send
  * canceling request in this case.
+ * This is processor only for webstore owner's orders. That is it must not be
+ * several online payee in same purchase, e.g. order with WS owner's items and
+ * PayPal method, and order with S.E.Seller1 items and PayPal method.
  * </p>
  *
  * @param <RS> platform dependent record set type
@@ -128,59 +133,127 @@ public class PrPpl<RS> implements IProcessor {
       List<CustOrder> ords = null;
       String payerID = pRqDt.getParameter("payerID");
       if (payerID == null) {
-        //phase 1:
-        ords = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
-        if (ords != null && ords.size() > 0) {
-          //proceed PayPal orders:
-          List<CustOrder> ppords = new ArrayList<CustOrder>();
-          for (CustOrder or : ords) {
+        //phase 1, creating payment:
+        Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
+        boolean isProceeded = false;
+        List<CustOrder> ppords = null;
+        List<CuOrSe> ppsords = null;
+        if (pur != null && pur.getOrds() != null && pur.getOrds().size() > 0) {
+          //checking orders with PayPal payment:
+          for (CustOrder or : pur.getOrds()) {
             if (or.getPayMeth().equals(EPaymentMethod.PAYPAL)
               || or.getPayMeth().equals(EPaymentMethod.PAYPAL_ANY)) {
+              if (ppords == null) {
+                ppords = new ArrayList<CustOrder>();
+              }
               ppords.add(or);
             }
           }
-          if (ppords.size() > 0) {
-            StringBuffer ordIds = new StringBuffer();
-            for (int i = 0; i < ppords.size();  i++) {
-              if (i == 0) {
-                ordIds.append(ppords.get(i).getItsId().toString());
-              } else {
-                ordIds.append("," + ppords.get(i).getItsId());
-              }
-            }
-            //checking invoice basis tax:
-            Set<String> ndFl = new HashSet<String>();
-            ndFl.add("itsId");
-            String tbn = CustOrderTxLn.class.getSimpleName();
-            pRqVs.put(tbn + "neededFields", ndFl);
-            List<CustOrderTxLn> ibtxls = this.srvOrm.retrieveListWithConditions(
-              pRqVs, CustOrderTxLn.class, "where TAXAB>0 and ITSOWNER in ("
-                + ordIds.toString() + ")");
-            pRqVs.remove(tbn + "neededFields");
-            if (ibtxls.size() == 0) {
-              ndFl.add("good");
-              tbn = CustOrderGdLn.class.getSimpleName();
-              pRqVs.put(tbn + "neededFields", ndFl);
-              List<CustOrderGdLn> gls = this.srvOrm.retrieveListWithConditions(
-                pRqVs, CustOrderGdLn.class, "where ITSOWNER in ("
-                  + ordIds.toString() + ")");
-              pRqVs.remove(tbn + "neededFields");
-            } else {
-              this.cncOrd.cancel(pRqVs, ords, EOrdStat.NEW);
-            }
+        }
+        if (!(ppords != null && ppords.size() > 0
+          && ppsords != null && ppsords.size() > 0)) {
+          if (ppords != null && ppords.size() > 0) {
+            //proceed PayPal orders:
+            isProceeded = makePplOrds(pRqVs, pRqDt, ppords);
+          } else if (ppsords != null && ppsords.size() > 0) {
+            //proceed PayPal S.E. orders:
           }
         }
+        if (!isProceeded) {
+          this.cncOrd.cancel(pRqVs, ords, EOrdStat.NEW);
+        }
       } else {
-        //phase 2:
-        APIContext apiContext = new APIContext("", "", "");
+        //phase 2, executing payment:
+        APIContext apiCon = new APIContext("", "", "");
         String paymentID = pRqDt.getParameter("paymentID");
-        Payment payment = new Payment();
-        payment.setId(paymentID);
-        PaymentExecution paymentExecution = new PaymentExecution();
-        paymentExecution.setPayerId(payerID);
-        Payment createdPayment = payment.execute(apiContext, paymentExecution);
+        Payment pay = new Payment();
+        pay.setId(paymentID);
+        PaymentExecution payExec = new PaymentExecution();
+        payExec.setPayerId(payerID);
+        try {
+          Payment crPay = pay.execute(apiCon, payExec);
+        } catch (PayPalRESTException e) {
+          this.cncOrd.cancel(pRqVs, cart.getBuyer(),
+            EOrdStat.BOOKED, EOrdStat.NEW);
+        }
       }
     }
+  }
+
+  /**
+   * <p>Makes consolidate order with PayPal payment and
+   * webstore owner's items and create PayPal payment.</p>
+   * @param pRqVs request scoped vars
+   * @param pRqDt request data
+   * @param pPplOrds orders
+   * @return if proceeded
+   * @throws Exception - an exception
+   **/
+  public final boolean makePplOrds(final Map<String, Object> pRqVs,
+    final IRequestData pRqDt, final List<CustOrder> pPplOrds) throws Exception {
+    boolean isPplErr = false;
+    StringBuffer ordIds = new StringBuffer();
+    for (int i = 0; i < pPplOrds.size();  i++) {
+      if (i == 0) {
+        ordIds.append(pPplOrds.get(i).getItsId().toString());
+      } else {
+        ordIds.append("," + pPplOrds.get(i).getItsId());
+      }
+    }
+    try {
+      this.srvDb.setIsAutocommit(false);
+      this.srvDb.setTransactionIsolation(ISrvDatabase
+        .TRANSACTION_READ_COMMITTED);
+      this.srvDb.beginTransaction();
+      //checking invoice basis tax:
+      Set<String> ndFl = new HashSet<String>();
+      ndFl.add("itsId");
+      String tbn = CustOrderTxLn.class.getSimpleName();
+      pRqVs.put(tbn + "neededFields", ndFl);
+      List<CustOrderTxLn> ibtxls = this.srvOrm.retrieveListWithConditions(
+        pRqVs, CustOrderTxLn.class, "where TAXAB>0 and ITSOWNER in ("
+          + ordIds.toString() + ")");
+      pRqVs.remove(tbn + "neededFields");
+      if (ibtxls.size() == 0) {
+        ndFl.add("good");
+        tbn = CustOrderGdLn.class.getSimpleName();
+        pRqVs.put(tbn + "neededFields", ndFl);
+        List<CustOrderGdLn> gls = this.srvOrm.retrieveListWithConditions(
+          pRqVs, CustOrderGdLn.class, "where ITSOWNER in ("
+            + ordIds.toString() + ")");
+        pRqVs.remove(tbn + "neededFields");
+      } else {
+        isPplErr = true;
+      }
+      if (isPplErr) {
+        this.srvDb.rollBackTransaction();
+      } else {
+        this.srvDb.commitTransaction();
+      }
+    } catch (Exception ex) {
+      if (!this.srvDb.getIsAutocommit()) {
+        this.srvDb.rollBackTransaction();
+      }
+      throw ex;
+    } finally {
+      this.srvDb.releaseResources();
+    }
+    return !isPplErr;
+  }
+
+  /**
+   * <p>Creates PayPal payment out of given orders lines with
+   * webstore owner's items.</p>
+   * @param pRqVs request scoped vars
+   * @param pRqDt request data
+   * @param pGoods Goods lines
+   * @param pServs Serves lines
+   * @throws Exception - an exception
+   **/
+  public final void createPay(final Map<String, Object> pRqVs,
+    final IRequestData pRqDt, final List<CustOrderGdLn> pGoods,
+      final List<CustOrderSrvLn> pServs) throws Exception {
+    //TODO special headed service "shipping"
   }
 
   //Simple getters and setters:
