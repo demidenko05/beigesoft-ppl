@@ -33,23 +33,31 @@ import com.paypal.api.payments.PaymentExecution;
 import com.paypal.api.payments.RedirectUrls;
 import com.paypal.api.payments.Transaction;
 import com.paypal.base.rest.APIContext;
-import com.paypal.base.rest.PayPalRESTException;
 
 import org.beigesoft.model.IRequestData;
+import org.beigesoft.model.IHasIdLongVersion;
+import org.beigesoft.log.ILogger;
 import org.beigesoft.service.IProcessor;
 import org.beigesoft.service.ISrvOrm;
 import org.beigesoft.service.ISrvDatabase;
 import org.beigesoft.webstore.model.EOrdStat;
 import org.beigesoft.webstore.model.EPaymentMethod;
 import org.beigesoft.webstore.model.Purch;
+import org.beigesoft.webstore.persistable.base.AOrdLn;
+import org.beigesoft.webstore.persistable.base.ATaxLn;
 import org.beigesoft.webstore.persistable.Cart;
 import org.beigesoft.webstore.persistable.CuOrSe;
+import org.beigesoft.webstore.persistable.CuOrSeGdLn;
+import org.beigesoft.webstore.persistable.CuOrSeSrLn;
+import org.beigesoft.webstore.persistable.CuOrSeTxLn;
 import org.beigesoft.webstore.persistable.CustOrder;
 import org.beigesoft.webstore.persistable.CustOrderTxLn;
 import org.beigesoft.webstore.persistable.CustOrderSrvLn;
 import org.beigesoft.webstore.persistable.CustOrderGdLn;
 import org.beigesoft.webstore.persistable.PayMd;
+import org.beigesoft.webstore.persistable.SePayMd;
 import org.beigesoft.webstore.persistable.OnlineBuyer;
+import org.beigesoft.webstore.persistable.SeSeller;
 import org.beigesoft.webstore.service.ISrvShoppingCart;
 import org.beigesoft.webstore.service.IAcpOrd;
 import org.beigesoft.webstore.service.ICncOrd;
@@ -76,7 +84,7 @@ import org.beigesoft.webstore.service.ICncOrd;
  * owner's orders or a S.E.Seller's. That is it must not be several online
  * payee in same purchase, e.g. order with WS owner's items and
  * PayPal method, and order with S.E.Seller1 items and PayPal method.
- * It must be only record in PAYMD table with ITSNAME="PAYPAL" that holds
+ * It must be only record in PAYMD/SEPAYMD table with ITSNAME=PAYPAL that holds
  * MDE="mode", SEC1="clientID" and SEC2="clientSecret".
  * </p>
  *
@@ -84,6 +92,16 @@ import org.beigesoft.webstore.service.ICncOrd;
  * @author Yury Demidenko
  */
 public class PrPpl<RS> implements IProcessor {
+
+  /**
+   * <p>Logger.</p>
+   **/
+  private ILogger log;
+
+  /**
+   * <p>Logger security.</p>
+   **/
+  private ILogger secLog;
 
   /**
    * <p>Database service.</p>
@@ -111,7 +129,9 @@ public class PrPpl<RS> implements IProcessor {
   private ICncOrd cncOrd;
 
   /**
-   * <p>Purchases map.</p>
+   * <p>Purchases map:
+   * [Buyer ID]p[Purchase ID]t[time in MS]-[PayPal payment ID].
+   * For S.E. Seller's purchase there is suffix "s[S.E.Seller ID]" in key</p>
    **/
   private final Map<String, String> pmts = new HashMap<String, String>();
 
@@ -124,18 +144,30 @@ public class PrPpl<RS> implements IProcessor {
   @Override
   public final void process(final Map<String, Object> pRqVs,
     final IRequestData pRqDt) throws Exception {
+    if (!pRqDt.getReqUrl().toString().toLowerCase().startsWith("https")) {
+      throw new Exception("PPL http not supported!!!");
+    }
     String puid = pRqDt.getParameter("puid");
+    chkOutDated(pRqVs, puid);
     if (puid != null) {
       String paymentID = this.pmts.get(puid);
       if (paymentID != null) {
         OnlineBuyer buyer = new OnlineBuyer();
-        String buyIdStr = puid.substring(0, puid.indexOf("-"));
-        String purIdStr = puid.substring(puid.indexOf("-") + 1);
+        int idxP = puid.indexOf("p");
+        int idxT = puid.indexOf("t");
+        int idxS = puid.indexOf("s");
+        String buyIdStr = puid.substring(0, idxP);
+        String purIdStr = puid.substring(idxP + 1, idxT);
         Long prId = Long.parseLong(purIdStr);
         buyer.setItsId(Long.parseLong(buyIdStr));
+        Long selId = null;
+        if (idxS != -1) {
+          selId = Long.parseLong(puid.substring(idxS + 1));
+        }
         this.pmts.remove(puid);
         String cnc = pRqDt.getParameter("cnc");
         if (cnc != null) {
+          //cancel request:
           this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED, EOrdStat.NEW);
         } else {
           //phase 2, executing payment:
@@ -146,10 +178,18 @@ public class PrPpl<RS> implements IProcessor {
             this.srvDb.setTransactionIsolation(ISrvDatabase
               .TRANSACTION_READ_COMMITTED);
             this.srvDb.beginTransaction();
-            List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
-              PayMd.class, "where ITSNAME=PAYPAL");
-            if (payMds.size() == 1) {
-              payMd = payMds.get(0);
+            if (selId == null) {
+              List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
+                PayMd.class, "where ITSNAME='PAYPAL'");
+              if (payMds.size() == 1) {
+                payMd = payMds.get(0);
+              }
+            } else {
+              List<SePayMd> payMds = this.srvOrm.retrieveListWithConditions(
+               pRqVs, SePayMd.class, "where ITSNAME='PAYPAL' and SEL=" + selId);
+              if (payMds.size() == 1) {
+                payMd = payMds.get(0);
+              }
             }
             this.srvDb.commitTransaction();
           } catch (Exception ex) {
@@ -162,109 +202,179 @@ public class PrPpl<RS> implements IProcessor {
           }
           if (payerID != null && payMd != null) {
             try {
-              APIContext apiCon = new APIContext(payMd.getMde(), payMd.getSec1(),
-                payMd.getSec2());
+              APIContext apiCon = new APIContext(payMd.getMde(),
+                payMd.getSec1(), payMd.getSec2());
               Payment pay = new Payment();
               pay.setId(paymentID);
               PaymentExecution payExec = new PaymentExecution();
               payExec.setPayerId(payerID);
-              Payment crPay = pay.execute(apiCon, payExec);
+              pay.execute(apiCon, payExec);
             } catch (Exception e) {
               this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
                 EOrdStat.NEW);
+              throw e;
             }
           } else {
-            this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED, EOrdStat.NEW);
+            this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
+              EOrdStat.NEW);
+            throw new Exception("Can't execute PPL payment!");
           }
         }
       }
     } else {
       //phase 1, creating payment:
-      PayMd payMd = null;
-      Cart cart = null;
+      phase1(pRqVs, pRqDt);
+    }
+  }
+
+  /**
+   * <p>It makes phase 1.</p>
+   * @param pRqVs request scoped vars
+   * @param pRqDt Request Data
+   * @throws Exception - an exception
+   **/
+  public final void phase1(final Map<String, Object> pRqVs,
+    final IRequestData pRqDt) throws Exception {
+    String wherePpl = "where ITSNAME='PAYPAL'";
+    //phase 1, creating payment:
+    List<PayMd> payMds = null;
+    List<SePayMd> payMdsSe = null;
+    Cart cart = null;
+    try {
+      this.srvDb.setIsAutocommit(false);
+      this.srvDb.setTransactionIsolation(ISrvDatabase
+        .TRANSACTION_READ_COMMITTED);
+      this.srvDb.beginTransaction();
+      cart = this.srvCart.getShoppingCart(pRqVs, pRqDt, false);
+      if (cart != null && cart.getErr()) {
+        cart = null;
+      } else if (cart != null) {
+        payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
+          PayMd.class, wherePpl);
+        payMdsSe = this.srvOrm.retrieveListWithConditions(pRqVs,
+          SePayMd.class, wherePpl);
+      }
+      this.srvDb.commitTransaction();
+    } catch (Exception ex) {
+      if (!this.srvDb.getIsAutocommit()) {
+        this.srvDb.rollBackTransaction();
+      }
+      throw ex;
+    } finally {
+      this.srvDb.releaseResources();
+    }
+    if (cart != null) {
+      Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
+      CustOrder ord = null;
+      //CuOrSe sord = null;
+      SeSeller sel = null;
+      List<CustOrder> ppords = null;
+      List<CuOrSe> ppsords = null;
       try {
-        this.srvDb.setIsAutocommit(false);
-        this.srvDb.setTransactionIsolation(ISrvDatabase
-          .TRANSACTION_READ_COMMITTED);
-        this.srvDb.beginTransaction();
-        cart = this.srvCart.getShoppingCart(pRqVs, pRqDt, false);
-        if (cart.getErr()) {
-          cart = null;
-        } else {
-          List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs, PayMd.class,
-            "where ITSNAME=PAYPAL");
-          if (payMds.size() == 1) {
-            payMd = payMds.get(0);
-          } else {
-            String err = "There is no PPL PayMd!";
-            cart.setErr(true);
-            if (cart.getDescr() == null) {
-              cart.setDescr(err);
+        if (pur != null) {
+          if (pur.getOrds() != null && pur.getOrds().size() > 0) {
+            //checking orders with PayPal payment:
+            for (CustOrder or : pur.getOrds()) {
+              if (or.getPayMeth().equals(EPaymentMethod.PAYPAL)
+                || or.getPayMeth().equals(EPaymentMethod.PAYPAL_ANY)) {
+                if (ppords == null) {
+                  ppords = new ArrayList<CustOrder>();
+                }
+                ppords.add(or);
+              }
+            }
+          }
+          if (pur.getSords() != null && pur.getSords().size() > 0) {
+            //checking S.E. orders with PayPal payment:
+            for (CuOrSe or : pur.getSords()) {
+              if (or.getPayMeth().equals(EPaymentMethod.PAYPAL)
+                || or.getPayMeth().equals(EPaymentMethod.PAYPAL_ANY)) {
+                if (ppsords == null) {
+                  ppsords = new ArrayList<CuOrSe>();
+                  sel = or.getSel();
+                } else if (!sel.getItsId().getItsId()
+                  .equals(or.getSel().getItsId().getItsId())) {
+                  throw new Exception("Several S.E.Payee in purchase!");
+                }
+                ppsords.add(or);
+              }
+            }
+          }
+        }
+        PayMd payMd = null;
+        if (!(ppords != null && ppords.size() > 0
+          && ppsords != null && ppsords.size() > 0)) {
+          if (ppords != null && ppords.size() > 0) {
+            //proceed PayPal orders:
+            if (payMds.size() != 1) {
+              throw new Exception("There is no properly PPL PayMd");
             } else {
-              cart.setDescr(cart.getDescr() + err);
+              payMd = payMds.get(0);
             }
-            this.srvOrm.updateEntity(pRqVs, cart);
-          }
-        }
-        this.srvDb.commitTransaction();
-      } catch (Exception ex) {
-        if (!this.srvDb.getIsAutocommit()) {
-          this.srvDb.rollBackTransaction();
-        }
-        throw ex;
-      } finally {
-        this.srvDb.releaseResources();
-      }    
-      if (cart != null) {
-        List<CustOrder> ords = null;
-        Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
-        CustOrder ord = null;
-        CuOrSe sord = null;
-        List<CustOrder> ppords = null;
-        List<CuOrSe> ppsords = null;
-        try {
-          if (pur != null) {
-            if (pur.getOrds() != null && pur.getOrds().size() > 0) {
-              //checking orders with PayPal payment:
-              for (CustOrder or : pur.getOrds()) {
-                if (or.getPayMeth().equals(EPaymentMethod.PAYPAL)
-                  || or.getPayMeth().equals(EPaymentMethod.PAYPAL_ANY)) {
-                  if (ppords == null) {
-                    ppords = new ArrayList<CustOrder>();
-                  }
-                  ppords.add(or);
-                }
+            ord = makePplOrds(pRqVs, pRqDt, ppords, cart, CustOrderGdLn.class,
+              CustOrderSrvLn.class, CustOrderTxLn.class);
+            ord.setCurr(ppords.get(0).getCurr());
+            ord.setPur(ppords.get(0).getPur());
+          } else if (ppsords != null && ppsords.size() > 0) {
+            //proceed PayPal S.E. orders:
+            SePayMd payMdSe = null;
+            for (SePayMd pm : payMdsSe) {
+              if (payMdSe == null && sel.getItsId().getItsId()
+                .equals(pm.getSeller().getItsId().getItsId())) {
+                payMdSe = pm;
+                payMd = pm;
+              } else if (payMdSe != null && payMdSe.getSeller().getItsId()
+                .getItsId().equals(pm.getSeller().getItsId().getItsId())) {
+                throw new Exception(
+                  "There is no properly PPL SePayMd for seller#"
+                    + sel.getItsId().getItsId());
               }
             }
-            if (pur.getSords() != null && pur.getSords().size() > 0) {
-              //checking S.E. orders with PayPal payment:
-              for (CuOrSe or : pur.getSords()) {
-                if (or.getPayMeth().equals(EPaymentMethod.PAYPAL)
-                  || or.getPayMeth().equals(EPaymentMethod.PAYPAL_ANY)) {
-                  if (ppsords == null) {
-                    ppsords = new ArrayList<CuOrSe>();
-                  }
-                  ppsords.add(or);
-                }
-              }
-            }
+            ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
+              CuOrSeSrLn.class, CuOrSeTxLn.class);
+            ord.setCurr(ppsords.get(0).getCurr());
+            ord.setPur(ppsords.get(0).getPur());
           }
-          if (!(ppords != null && ppords.size() > 0
-            && ppsords != null && ppsords.size() > 0)) {
-            if (ppords != null && ppords.size() > 0) {
-              //proceed PayPal orders:
-              ord = makePplOrds(pRqVs, pRqDt, ppords, cart);
-            } else if (ppsords != null && ppsords.size() > 0) {
-              //proceed PayPal S.E. orders:
-            }
-          }
-          if (ord != null) {
-            createPay(pRqVs, pRqDt, ord, payMd);
-          } else {
-            throw new Exception("Can't make PPL!");
-          }
-        } catch (Exception e) {
-          this.cncOrd.cancel(pRqVs, pur, EOrdStat.NEW);
+        }
+        if (ord != null) {
+          createPay(pRqVs, pRqDt, ord, payMd, sel);
+        } else {
+          throw new Exception("Can't create PPL payment!");
+        }
+      } catch (Exception e) {
+        this.cncOrd.cancel(pRqVs, pur, EOrdStat.NEW);
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * <p>It checks for outdated booked orders (20min) and cancels them.</p>
+   * @param pRqVs request scoped vars
+   * @param pPuId purchase ID, maybe NULL
+   * @throws Exception - an exception
+   **/
+  public final void chkOutDated(final Map<String, Object> pRqVs,
+    final String pPuId) throws Exception {
+    long now = new Date().getTime();
+    for (String puid : this.pmts.keySet()) {
+      if (pPuId != null && !pPuId.equals(puid)) {
+        int idxT = puid.indexOf("t");
+        int idxS = puid.indexOf("s");
+        long puTi;
+        if (idxS == -1) {
+          puTi = Long.parseLong(puid.substring(idxS + 1));
+        } else {
+          puTi = Long.parseLong(puid.substring(idxS + 1, idxS));
+        }
+        if (now - puTi > 72000000) {
+          getSecLog().warn(pRqVs, PrPpl.class, "Outdated purchase: " + puid);
+          int idxP = puid.indexOf("p");
+          Long buyerId = Long.parseLong(puid.substring(0, idxP));
+          Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
+          OnlineBuyer buyer = new OnlineBuyer();
+          buyer.setItsId(buyerId);
+          this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED, EOrdStat.NEW);
         }
       }
     }
@@ -272,16 +382,24 @@ public class PrPpl<RS> implements IProcessor {
 
   /**
    * <p>Makes consolidate order with  webstore owner's items.</p>
+   * @param <GL> good line type
+   * @param <SL> service line type
+   * @param <TL> tax line type
    * @param pRqVs request scoped vars
    * @param pRqDt request data
    * @param pPplOrds orders
    * @param pCart cart
+   * @param pGlCl good line class
+   * @param pSlCl service line class
+   * @param pTlCl tax line class
    * @return consolidated order or null if not possible
    * @throws Exception - an exception
    **/
-  public final CustOrder makePplOrds(final Map<String, Object> pRqVs,
-    final IRequestData pRqDt, final List<CustOrder> pPplOrds,
-      final Cart pCart) throws Exception {
+  public final <GL extends AOrdLn, SL extends AOrdLn, TL extends ATaxLn>
+   CustOrder makePplOrds(final Map<String, Object> pRqVs,
+    final IRequestData pRqDt, final List<? extends IHasIdLongVersion> pPplOrds,
+     final Cart pCart, final Class<GL> pGlCl, final Class<SL> pSlCl,
+      final Class<TL> pTlCl) throws Exception {
     CustOrder ord = null;
     StringBuffer ordIds = new StringBuffer();
     for (int i = 0; i < pPplOrds.size();  i++) {
@@ -301,21 +419,62 @@ public class PrPpl<RS> implements IProcessor {
       //checking invoice basis tax:
       Set<String> ndFl = new HashSet<String>();
       ndFl.add("itsId");
-      String tbn = CustOrderTxLn.class.getSimpleName();
+      String tbn = pTlCl.getSimpleName();
       pRqVs.put(tbn + "neededFields", ndFl);
-      List<CustOrderTxLn> ibtxls = this.srvOrm.retrieveListWithConditions(
-        pRqVs, CustOrderTxLn.class, "where TAXAB>0 and ITSOWNER in ("
+      List<TL> ibtxls = this.srvOrm.retrieveListWithConditions(
+        pRqVs, pTlCl, "where TAXAB>0 and ITSOWNER in ("
           + ordIds.toString() + ")");
       pRqVs.remove(tbn + "neededFields");
       if (ibtxls.size() == 0) {
-        ndFl.add("good");
-        tbn = CustOrderGdLn.class.getSimpleName();
+        ndFl.add("itsName");
+        ndFl.add("price");
+        ndFl.add("quant");
+        ndFl.add("subt");
+        ndFl.add("tot");
+        ndFl.add("totTx");
+        tbn = pGlCl.getSimpleName();
         pRqVs.put(tbn + "neededFields", ndFl);
-        goods = this.srvOrm.retrieveListWithConditions(pRqVs,
-          CustOrderGdLn.class, "where ITSOWNER in (" + ordIds.toString() + ")");
+        List<GL> gls = this.srvOrm.retrieveListWithConditions(pRqVs,
+          pGlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
         pRqVs.remove(tbn + "neededFields");
-        if (goods.size() == 0) {
-          goods = null;
+        if (gls.size() > 0) {
+          if (pGlCl == CustOrderGdLn.class) {
+            goods = (List<CustOrderGdLn>) gls;
+          } else {
+            goods = new ArrayList<CustOrderGdLn>();
+            for (GL il : gls) {
+              CustOrderGdLn itm = new CustOrderGdLn();
+              itm.setItsId(il.getItsId());
+              itm.setItsName(il.getItsName());
+              itm.setPrice(il.getPrice());
+              itm.setQuant(il.getQuant());
+              itm.setSubt(il.getSubt());
+              itm.setTot(il.getTot());
+              itm.setTotTx(il.getTotTx());
+            }
+          }
+        }
+        tbn = pSlCl.getSimpleName();
+        pRqVs.put(tbn + "neededFields", ndFl);
+        List<SL> sls = this.srvOrm.retrieveListWithConditions(pRqVs,
+          pSlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
+        pRqVs.remove(tbn + "neededFields");
+        if (sls.size() > 0) {
+          if (pSlCl == CustOrderSrvLn.class) {
+            servs = (List<CustOrderSrvLn>) sls;
+          } else {
+            servs = new ArrayList<CustOrderSrvLn>();
+            for (SL il : sls) {
+              CustOrderSrvLn itm = new CustOrderSrvLn();
+              itm.setItsId(il.getItsId());
+              itm.setItsName(il.getItsName());
+              itm.setPrice(il.getPrice());
+              itm.setQuant(il.getQuant());
+              itm.setSubt(il.getSubt());
+              itm.setTot(il.getTot());
+              itm.setTotTx(il.getTotTx());
+            }
+          }
         }
       } else {
         String err = "Invoice basis PPL!";
@@ -339,8 +498,6 @@ public class PrPpl<RS> implements IProcessor {
     if (goods != null || servs != null) {
       ord = new CustOrder();
       ord.setBuyer(pCart.getBuyer());
-      ord.setCurr(pPplOrds.get(0).getCurr());
-      ord.setPur(pPplOrds.get(0).getPur());
       ord.setGoods(goods);
       ord.setServs(servs);
       if (goods != null) {
@@ -368,18 +525,21 @@ public class PrPpl<RS> implements IProcessor {
    * @param pRqDt request data
    * @param pOrd consolidated order
    * @param pPayMd client codes
+   * @param pSel S.E. Seller or NULL
    * @throws Exception - an exception
    **/
   public final void createPay(final Map<String, Object> pRqVs,
     final IRequestData pRqDt, final CustOrder pOrd,
-      final PayMd pPayMd) throws Exception {
+      final PayMd pPayMd, final SeSeller pSel) throws Exception {
     APIContext apiCon = new APIContext(pPayMd.getMde(), pPayMd.getSec1(),
       pPayMd.getSec2());
     Details details = new Details();
     //TODO special headed service "shipping"
     //details.setShipping("1");
     details.setSubtotal(pOrd.getSubt().toString());
-    details.setTax(pOrd.getTotTx().toString());
+    if (pOrd.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
+      details.setTax(pOrd.getTotTx().toString());
+    }
     Amount amount = new Amount();
     amount.setCurrency(pOrd.getCurr().getStCo());
     amount.setTotal(pOrd.getTot().toString());
@@ -391,22 +551,26 @@ public class PrPpl<RS> implements IProcessor {
     if (pOrd.getGoods() != null) {
       for (CustOrderGdLn il : pOrd.getGoods()) {
         Item item = new Item();
-        item.setName(il.getGood().getItsName());
+        item.setName(il.getItsName());
         item.setQuantity(il.getQuant().toString());
         item.setCurrency(pOrd.getCurr().getStCo());
         item.setPrice(il.getPrice().toString());
-        item.setTax(il.getTotTx().toString());
+        if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
+          item.setTax(il.getTotTx().toString());
+        }
         items.add(item);
       }
     }
     if (pOrd.getServs() != null) {
       for (CustOrderSrvLn il : pOrd.getServs()) {
         Item item = new Item();
-        item.setName(il.getService().getItsName());
+        item.setName(il.getItsName());
         item.setQuantity(il.getQuant().toString());
         item.setCurrency(pOrd.getCurr().getStCo());
         item.setPrice(il.getPrice().toString());
-        item.setTax(il.getTotTx().toString());
+        if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
+          item.setTax(il.getTotTx().toString());
+        }
         items.add(item);
       }
     }
@@ -422,7 +586,11 @@ public class PrPpl<RS> implements IProcessor {
     payment.setPayer(payer);
     payment.setTransactions(transactions);
     RedirectUrls redUrls = new RedirectUrls();
-    String puid = pOrd.getBuyer().getItsId().toString() + "-" + pOrd.getPur();
+    String puid = pOrd.getBuyer().getItsId().toString() + "p" + pOrd.getPur()
+      + "t" + new Date().getTime();
+    if (pSel != null) {
+      puid = puid + "s" + pSel.getItsId().getItsId();
+    }
     redUrls.setCancelUrl(pRqDt.getReqUrl() + "?nmPrc=PrPpl&cnc=1&puid=" + puid);
     redUrls.setReturnUrl(pRqDt.getReqUrl() + "?nmPrc=PrPpl&puid=" + puid);
     payment.setRedirectUrls(redUrls);
@@ -435,10 +603,47 @@ public class PrPpl<RS> implements IProcessor {
       }
     }
     pRqDt.setAttribute("pplPay", crPay);
+    if (getLog().getIsShowDebugMessagesFor(getClass())
+      && getLog().getDetailLevel() > 42000) {
+      getLog().debug(pRqVs, PrPpl.class,
+        "Cancel URL: " + redUrls.getCancelUrl());
+    }
     this.pmts.put(puid, crPay.getId());
   }
 
   //Simple getters and setters:
+  /**
+   * <p>Getter for log.</p>
+   * @return ILogger
+   **/
+  public final ILogger getLog() {
+    return this.log;
+  }
+
+  /**
+   * <p>Setter for log.</p>
+   * @param pLog reference
+   **/
+  public final void setLog(final ILogger pLog) {
+    this.log = pLog;
+  }
+
+  /**
+   * <p>Getter for secLog.</p>
+   * @return ILogger
+   **/
+  public final ILogger getSecLog() {
+    return this.secLog;
+  }
+
+  /**
+   * <p>Setter for secLog.</p>
+   * @param pSecLog reference
+   **/
+  public final void setSecLog(final ILogger pSecLog) {
+    this.secLog = pSecLog;
+  }
+
   /**
    * <p>Getter for srvDb.</p>
    * @return ISrvDatabase<RS>
