@@ -7,4 +7,6 @@
 <suppressions>
   <suppress checks="MagicNumberCheck"
     files="PrPpl"/>
+  <suppress checks="ParameterNumber"
+    files="PrPpl"/>
 </suppressions>
