@@ -148,9 +148,9 @@ public class PrPpl<RS> implements IProcessor {
     if (!pRqDt.getReqUrl().toString().toLowerCase().startsWith("https")) {
       throw new Exception("PPL http not supported!!!");
     }
-    String puid = pRqDt.getParameter("puid");
-    chkOutDated(pRqVs, puid);
     SettingsAdd setAdd = (SettingsAdd) pRqVs.get("setAdd");
+    String puid = pRqDt.getParameter("puid");
+    chkOutDated(pRqVs, puid, setAdd);
     if (puid != null) {
       String paymentID = this.pmts.get(puid);
       if (paymentID != null) {
@@ -170,7 +170,21 @@ public class PrPpl<RS> implements IProcessor {
         String cnc = pRqDt.getParameter("cnc");
         if (cnc != null) {
           //cancel request:
-          this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED, EOrdStat.NEW);
+          try {
+            this.srvDb.setIsAutocommit(false);
+            this.srvDb.setTransactionIsolation(setAdd.getBkTr());
+            this.srvDb.beginTransaction();
+            this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
+              EOrdStat.NEW);
+            this.srvDb.commitTransaction();
+          } catch (Exception ex) {
+            if (!this.srvDb.getIsAutocommit()) {
+              this.srvDb.rollBackTransaction();
+            }
+            throw ex;
+          } finally {
+            this.srvDb.releaseResources();
+          }
           pRqDt.setAttribute("pplPayId", paymentID);
           pRqDt.setAttribute("pplStat", "canceled");
         } else {
@@ -193,6 +207,10 @@ public class PrPpl<RS> implements IProcessor {
               if (payMds.size() == 1) {
                 payMd = payMds.get(0);
               }
+            }
+            if (!(payerID != null && payMd != null)) {
+              this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
+                EOrdStat.NEW);
             }
             this.srvDb.commitTransaction();
           } catch (Exception ex) {
@@ -251,8 +269,6 @@ public class PrPpl<RS> implements IProcessor {
               this.srvDb.releaseResources();
             }
           } else {
-            this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
-              EOrdStat.NEW);
             throw new Exception("Can't execute PPL payment!");
           }
         }
@@ -290,23 +306,13 @@ public class PrPpl<RS> implements IProcessor {
         payMdsSe = this.srvOrm.retrieveListWithConditions(pRqVs,
           SePayMd.class, wherePpl);
       }
-      this.srvDb.commitTransaction();
-    } catch (Exception ex) {
-      if (!this.srvDb.getIsAutocommit()) {
-        this.srvDb.rollBackTransaction();
-      }
-      throw ex;
-    } finally {
-      this.srvDb.releaseResources();
-    }
-    if (cart != null) {
-      Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
-      CustOrder ord = null;
-      //CuOrSe sord = null;
-      SeSeller sel = null;
-      List<CustOrder> ppords = null;
-      List<CuOrSe> ppsords = null;
-      try {
+      if (cart != null) {
+        Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
+        CustOrder ord = null;
+        //CuOrSe sord = null;
+        SeSeller sel = null;
+        List<CustOrder> ppords = null;
+        List<CuOrSe> ppsords = null;
         if (pur != null) {
           if (pur.getOrds() != null && pur.getOrds().size() > 0) {
             //checking orders with PayPal payment:
@@ -348,7 +354,7 @@ public class PrPpl<RS> implements IProcessor {
               payMd = payMds.get(0);
             }
             ord = makePplOrds(pRqVs, pRqDt, ppords, cart, CustOrderGdLn.class,
-              CustOrderSrvLn.class, CustOrderTxLn.class, pSetAdd);
+              CustOrderSrvLn.class, CustOrderTxLn.class);
             ord.setCurr(ppords.get(0).getCurr());
             ord.setPur(ppords.get(0).getPur());
           } else if (ppsords != null && ppsords.size() > 0) {
@@ -367,7 +373,7 @@ public class PrPpl<RS> implements IProcessor {
               }
             }
             ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
-              CuOrSeSrLn.class, CuOrSeTxLn.class, pSetAdd);
+              CuOrSeSrLn.class, CuOrSeTxLn.class);
             ord.setCurr(ppsords.get(0).getCurr());
             ord.setPur(ppsords.get(0).getPur());
           }
@@ -377,10 +383,15 @@ public class PrPpl<RS> implements IProcessor {
         } else {
           throw new Exception("Can't create PPL payment!");
         }
-      } catch (Exception e) {
-        this.cncOrd.cancel(pRqVs, pur, EOrdStat.NEW);
-        throw e;
       }
+      this.srvDb.commitTransaction();
+    } catch (Exception ex) {
+      if (!this.srvDb.getIsAutocommit()) {
+        this.srvDb.rollBackTransaction();
+      }
+      throw ex;
+    } finally {
+      this.srvDb.releaseResources();
     }
   }
 
@@ -388,11 +399,14 @@ public class PrPpl<RS> implements IProcessor {
    * <p>It checks for outdated booked orders (20min) and cancels them.</p>
    * @param pRqVs request scoped vars
    * @param pPuId purchase ID, maybe NULL
+   * @param pSetAdd SettingsAdd
    * @throws Exception - an exception
    **/
   public final void chkOutDated(final Map<String, Object> pRqVs,
-    final String pPuId) throws Exception {
+    final String pPuId, final SettingsAdd pSetAdd) throws Exception {
     long now = new Date().getTime();
+    List<OnlineBuyer> brs = null;
+    List<Long> prs = null;
     for (String puid : this.pmts.keySet()) {
       if (pPuId != null && !pPuId.equals(puid)) {
         int idxT = puid.indexOf("t");
@@ -410,8 +424,32 @@ public class PrPpl<RS> implements IProcessor {
           Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
           OnlineBuyer buyer = new OnlineBuyer();
           buyer.setItsId(buyerId);
-          this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED, EOrdStat.NEW);
+          if (brs == null) {
+            brs = new ArrayList<OnlineBuyer>();
+            prs = new ArrayList<Long>();
+          }
+          brs.add(buyer);
+          prs.add(prId);
         }
+      }
+    }
+    if (brs != null) {
+      try {
+        this.srvDb.setIsAutocommit(false);
+        this.srvDb.setTransactionIsolation(pSetAdd.getBkTr());
+        this.srvDb.beginTransaction();
+        for (int i = 0; i < brs.size(); i++) {
+          this.cncOrd.cancel(pRqVs, brs.get(i), prs.get(i),
+            EOrdStat.BOOKED, EOrdStat.NEW);
+        }
+        this.srvDb.commitTransaction();
+      } catch (Exception ex) {
+        if (!this.srvDb.getIsAutocommit()) {
+          this.srvDb.rollBackTransaction();
+        }
+        throw ex;
+      } finally {
+        this.srvDb.releaseResources();
       }
     }
   }
@@ -428,7 +466,6 @@ public class PrPpl<RS> implements IProcessor {
    * @param pGlCl good line class
    * @param pSlCl service line class
    * @param pTlCl tax line class
-   * @param pSetAdd SettingsAdd
    * @return consolidated order or null if not possible
    * @throws Exception - an exception
    **/
@@ -436,7 +473,7 @@ public class PrPpl<RS> implements IProcessor {
    CustOrder makePplOrds(final Map<String, Object> pRqVs,
     final IRequestData pRqDt, final List<? extends IHasIdLongVersion> pPplOrds,
      final Cart pCart, final Class<GL> pGlCl, final Class<SL> pSlCl,
-      final Class<TL> pTlCl, final SettingsAdd pSetAdd) throws Exception {
+      final Class<TL> pTlCl) throws Exception {
     CustOrder ord = null;
     StringBuffer ordIds = new StringBuffer();
     for (int i = 0; i < pPplOrds.size();  i++) {
@@ -448,88 +485,75 @@ public class PrPpl<RS> implements IProcessor {
     }
     List<CustOrderGdLn> goods = null;
     List<CustOrderSrvLn> servs = null;
-    try {
-      this.srvDb.setIsAutocommit(false);
-      this.srvDb.setTransactionIsolation(pSetAdd.getBkTr());
-      this.srvDb.beginTransaction();
-      //checking invoice basis tax:
-      Set<String> ndFl = new HashSet<String>();
-      ndFl.add("itsId");
-      String tbn = pTlCl.getSimpleName();
+    //checking invoice basis tax:
+    Set<String> ndFl = new HashSet<String>();
+    ndFl.add("itsId");
+    String tbn = pTlCl.getSimpleName();
+    pRqVs.put(tbn + "neededFields", ndFl);
+    List<TL> ibtxls = this.srvOrm.retrieveListWithConditions(
+      pRqVs, pTlCl, "where TAXAB>0 and ITSOWNER in ("
+        + ordIds.toString() + ")");
+    pRqVs.remove(tbn + "neededFields");
+    if (ibtxls.size() == 0) {
+      ndFl.add("itsName");
+      ndFl.add("price");
+      ndFl.add("quant");
+      ndFl.add("subt");
+      ndFl.add("tot");
+      ndFl.add("totTx");
+      tbn = pGlCl.getSimpleName();
       pRqVs.put(tbn + "neededFields", ndFl);
-      List<TL> ibtxls = this.srvOrm.retrieveListWithConditions(
-        pRqVs, pTlCl, "where TAXAB>0 and ITSOWNER in ("
-          + ordIds.toString() + ")");
+      List<GL> gls = this.srvOrm.retrieveListWithConditions(pRqVs,
+        pGlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
       pRqVs.remove(tbn + "neededFields");
-      if (ibtxls.size() == 0) {
-        ndFl.add("itsName");
-        ndFl.add("price");
-        ndFl.add("quant");
-        ndFl.add("subt");
-        ndFl.add("tot");
-        ndFl.add("totTx");
-        tbn = pGlCl.getSimpleName();
-        pRqVs.put(tbn + "neededFields", ndFl);
-        List<GL> gls = this.srvOrm.retrieveListWithConditions(pRqVs,
-          pGlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
-        pRqVs.remove(tbn + "neededFields");
-        if (gls.size() > 0) {
-          if (pGlCl == CustOrderGdLn.class) {
-            goods = (List<CustOrderGdLn>) gls;
-          } else {
-            goods = new ArrayList<CustOrderGdLn>();
-            for (GL il : gls) {
-              CustOrderGdLn itm = new CustOrderGdLn();
-              itm.setItsId(il.getItsId());
-              itm.setItsName(il.getItsName());
-              itm.setPrice(il.getPrice());
-              itm.setQuant(il.getQuant());
-              itm.setSubt(il.getSubt());
-              itm.setTot(il.getTot());
-              itm.setTotTx(il.getTotTx());
-            }
-          }
-        }
-        tbn = pSlCl.getSimpleName();
-        pRqVs.put(tbn + "neededFields", ndFl);
-        List<SL> sls = this.srvOrm.retrieveListWithConditions(pRqVs,
-          pSlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
-        pRqVs.remove(tbn + "neededFields");
-        if (sls.size() > 0) {
-          if (pSlCl == CustOrderSrvLn.class) {
-            servs = (List<CustOrderSrvLn>) sls;
-          } else {
-            servs = new ArrayList<CustOrderSrvLn>();
-            for (SL il : sls) {
-              CustOrderSrvLn itm = new CustOrderSrvLn();
-              itm.setItsId(il.getItsId());
-              itm.setItsName(il.getItsName());
-              itm.setPrice(il.getPrice());
-              itm.setQuant(il.getQuant());
-              itm.setSubt(il.getSubt());
-              itm.setTot(il.getTot());
-              itm.setTotTx(il.getTotTx());
-            }
-          }
-        }
-      } else {
-        String err = "Invoice basis PPL!";
-        pCart.setErr(true);
-        if (pCart.getDescr() == null) {
-          pCart.setDescr(err);
+      if (gls.size() > 0) {
+        if (pGlCl == CustOrderGdLn.class) {
+          goods = (List<CustOrderGdLn>) gls;
         } else {
-          pCart.setDescr(pCart.getDescr() + err);
+          goods = new ArrayList<CustOrderGdLn>();
+          for (GL il : gls) {
+            CustOrderGdLn itm = new CustOrderGdLn();
+            itm.setItsId(il.getItsId());
+            itm.setItsName(il.getItsName());
+            itm.setPrice(il.getPrice());
+            itm.setQuant(il.getQuant());
+            itm.setSubt(il.getSubt());
+            itm.setTot(il.getTot());
+            itm.setTotTx(il.getTotTx());
+          }
         }
-        this.srvOrm.updateEntity(pRqVs, pCart);
       }
-      this.srvDb.commitTransaction();
-    } catch (Exception ex) {
-      if (!this.srvDb.getIsAutocommit()) {
-        this.srvDb.rollBackTransaction();
+      tbn = pSlCl.getSimpleName();
+      pRqVs.put(tbn + "neededFields", ndFl);
+      List<SL> sls = this.srvOrm.retrieveListWithConditions(pRqVs,
+        pSlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
+      pRqVs.remove(tbn + "neededFields");
+      if (sls.size() > 0) {
+        if (pSlCl == CustOrderSrvLn.class) {
+          servs = (List<CustOrderSrvLn>) sls;
+        } else {
+          servs = new ArrayList<CustOrderSrvLn>();
+          for (SL il : sls) {
+            CustOrderSrvLn itm = new CustOrderSrvLn();
+            itm.setItsId(il.getItsId());
+            itm.setItsName(il.getItsName());
+            itm.setPrice(il.getPrice());
+            itm.setQuant(il.getQuant());
+            itm.setSubt(il.getSubt());
+            itm.setTot(il.getTot());
+            itm.setTotTx(il.getTotTx());
+          }
+        }
       }
-      throw ex;
-    } finally {
-      this.srvDb.releaseResources();
+    } else {
+      String err = "Invoice basis PPL!";
+      pCart.setErr(true);
+      if (pCart.getDescr() == null) {
+        pCart.setDescr(err);
+      } else {
+        pCart.setDescr(pCart.getDescr() + err);
+      }
+      this.srvOrm.updateEntity(pRqVs, pCart);
     }
     if (goods != null || servs != null) {
       ord = new CustOrder();
