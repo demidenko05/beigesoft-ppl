@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Date;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 import com.paypal.api.payments.Amount;
 import com.paypal.api.payments.Details;
@@ -40,6 +41,7 @@ import org.beigesoft.log.ILogger;
 import org.beigesoft.service.IProcessor;
 import org.beigesoft.service.ISrvOrm;
 import org.beigesoft.service.ISrvDatabase;
+import org.beigesoft.service.ISrvNumberToString;
 import org.beigesoft.webstore.model.EOrdStat;
 import org.beigesoft.webstore.model.EPaymentMethod;
 import org.beigesoft.webstore.model.Purch;
@@ -128,6 +130,11 @@ public class PrPpl<RS> implements IProcessor {
    * <p>Cancel accepted buyer's orders service.</p>
    **/
   private ICncOrd cncOrd;
+
+  /**
+   * <p>Service print number.</p>
+   **/
+  private ISrvNumberToString srvNumToStr;
 
   /**
    * <p>Purchases map:
@@ -223,8 +230,8 @@ public class PrPpl<RS> implements IProcessor {
           }
           if (payerID != null && payMd != null) {
             try {
-              APIContext apiCon = new APIContext(payMd.getMde(),
-                payMd.getSec1(), payMd.getSec2());
+              APIContext apiCon = new APIContext(payMd.getSec1(),
+                payMd.getSec2(), payMd.getMde());
               Payment pay = new Payment();
               pay.setId(paymentID);
               PaymentExecution payExec = new PaymentExecution();
@@ -562,6 +569,13 @@ public class PrPpl<RS> implements IProcessor {
       ord.setServs(servs);
       if (goods != null) {
         for (CustOrderGdLn il : goods) {
+          //price inclusive tax???
+          //https://stackoverflow.com/questions/24285424/
+          //can-the-paypal-rest-api-display-order-items-with-tax-included
+          if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1
+        && il.getPrice().multiply(il.getQuant()).compareTo(il.getTot()) == 0) {
+      il.setPrice(il.getSubt().divide(il.getQuant(), 2, RoundingMode.HALF_UP));
+          }
           ord.setTot(ord.getTot().add(il.getTot()));
           ord.setTotTx(ord.getTotTx().add(il.getTotTx()));
           ord.setSubt(ord.getSubt().add(il.getSubt()));
@@ -569,6 +583,10 @@ public class PrPpl<RS> implements IProcessor {
       }
       if (servs != null) {
         for (CustOrderSrvLn il : servs) {
+          if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1
+        && il.getPrice().multiply(il.getQuant()).compareTo(il.getTot()) == 0) {
+      il.setPrice(il.getSubt().divide(il.getQuant(), 2, RoundingMode.HALF_UP));
+          }
           ord.setTot(ord.getTot().add(il.getTot()));
           ord.setTotTx(ord.getTotTx().add(il.getTotTx()));
           ord.setSubt(ord.getSubt().add(il.getSubt()));
@@ -591,18 +609,24 @@ public class PrPpl<RS> implements IProcessor {
   public final void createPay(final Map<String, Object> pRqVs,
     final IRequestData pRqDt, final CustOrder pOrd,
       final PayMd pPayMd, final SeSeller pSel) throws Exception {
-    APIContext apiCon = new APIContext(pPayMd.getMde(), pPayMd.getSec1(),
-      pPayMd.getSec2());
+    APIContext apiCon = new APIContext(pPayMd.getSec1(), pPayMd.getSec2(),
+      pPayMd.getMde());
     Details details = new Details();
     //TODO special headed service "shipping"
     //details.setShipping("1");
-    details.setSubtotal(pOrd.getSubt().toString());
+    details.setSubtotal(prn(pOrd.getSubt(), 2));
     if (pOrd.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-      details.setTax(pOrd.getTotTx().toString());
+      details.setTax(prn(pOrd.getTotTx(), 2));
+    }
+    if (getLog().getIsShowDebugMessagesFor(getClass())
+      && getLog().getDetailLevel() > 42000) {
+      getLog().debug(pRqVs, PrPpl.class,
+        "Order tot/subt/tax/curr: " + pOrd.getTot() + "/" + pOrd.getSubt() + "/"
+          + pOrd.getTotTx() + "/" + pOrd.getCurr().getStCo());
     }
     Amount amount = new Amount();
     amount.setCurrency(pOrd.getCurr().getStCo());
-    amount.setTotal(pOrd.getTot().toString());
+    amount.setTotal(prn(pOrd.getTot(), 2));
     amount.setDetails(details);
     Transaction transaction = new Transaction();
     transaction.setAmount(amount);
@@ -610,26 +634,38 @@ public class PrPpl<RS> implements IProcessor {
     List<Item> items = new ArrayList<Item>();
     if (pOrd.getGoods() != null) {
       for (CustOrderGdLn il : pOrd.getGoods()) {
+        if (getLog().getIsShowDebugMessagesFor(getClass())
+          && getLog().getDetailLevel() > 42000) {
+          getLog().debug(pRqVs, PrPpl.class,
+            "item/price/quant/tax: " + il.getItsName() + "/" + il.getPrice()
+              + "/" + il.getQuant() + "/" + il.getTotTx());
+        }
         Item item = new Item();
         item.setName(il.getItsName());
-        item.setQuantity(il.getQuant().toString());
+        item.setQuantity(Long.valueOf(il.getQuant().longValue()).toString());
         item.setCurrency(pOrd.getCurr().getStCo());
-        item.setPrice(il.getPrice().toString());
+        item.setPrice(prn(il.getPrice(), 2));
         if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-          item.setTax(il.getTotTx().toString());
+          item.setTax(prn(il.getTotTx(), 2));
         }
         items.add(item);
       }
     }
     if (pOrd.getServs() != null) {
       for (CustOrderSrvLn il : pOrd.getServs()) {
+        if (getLog().getIsShowDebugMessagesFor(getClass())
+          && getLog().getDetailLevel() > 42000) {
+          getLog().debug(pRqVs, PrPpl.class,
+            "item/price/quant/tax: " + il.getItsName() + "/" + il.getPrice()
+              + "/" + il.getQuant() + "/" + il.getTotTx());
+        }
         Item item = new Item();
         item.setName(il.getItsName());
-        item.setQuantity(il.getQuant().toString());
+        item.setQuantity(Long.valueOf(il.getQuant().longValue()).toString());
         item.setCurrency(pOrd.getCurr().getStCo());
-        item.setPrice(il.getPrice().toString());
+        item.setPrice(prn(il.getPrice(), 2));
         if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-          item.setTax(il.getTotTx().toString());
+          item.setTax(prn(il.getTotTx(), 2));
         }
         items.add(item);
       }
@@ -663,7 +699,7 @@ public class PrPpl<RS> implements IProcessor {
         pRqDt.setAttribute("redirectURL", link.getHref());
       }
     }
-    pRqDt.setAttribute("pplPay", crPay.getId());
+    pRqDt.setAttribute("pplPayId", crPay.getId());
     pRqDt.setAttribute("pplStat", "created");
     if (getLog().getIsShowDebugMessagesFor(getClass())
       && getLog().getDetailLevel() > 42000) {
@@ -671,6 +707,16 @@ public class PrPpl<RS> implements IProcessor {
         "Cancel URL: " + redUrls.getCancelUrl());
     }
     this.pmts.put(puid, crPay.getId());
+  }
+
+  /**
+   * <p>Simple delegator to print number.</p>
+   * @param pVal value
+   * @param pDp decimal places
+   * @return String
+   **/
+  public final String prn(final BigDecimal pVal, final Integer pDp) {
+    return this.srvNumToStr.print(pVal.toString(), ".", "", pDp, 3);
   }
 
   //Simple getters and setters:
@@ -784,5 +830,21 @@ public class PrPpl<RS> implements IProcessor {
    **/
   public final void setCncOrd(final ICncOrd pCncOrd) {
     this.cncOrd = pCncOrd;
+  }
+
+  /**
+   * <p>Getter for srvNumToStr.</p>
+   * @return ISrvNumberToString
+   **/
+  public final ISrvNumberToString getSrvNumToStr() {
+    return this.srvNumToStr;
+  }
+
+  /**
+   * <p>Setter for srvNumToStr.</p>
+   * @param pSrvNumToStr reference
+   **/
+  public final void setSrvNumToStr(final ISrvNumberToString pSrvNumToStr) {
+    this.srvNumToStr = pSrvNumToStr;
   }
 }
