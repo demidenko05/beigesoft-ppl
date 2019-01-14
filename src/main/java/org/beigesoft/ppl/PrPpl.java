@@ -42,6 +42,7 @@ import org.beigesoft.service.IProcessor;
 import org.beigesoft.service.ISrvOrm;
 import org.beigesoft.service.ISrvDatabase;
 import org.beigesoft.service.ISrvNumberToString;
+import org.beigesoft.accounting.persistable.AccSettings;
 import org.beigesoft.webstore.model.EOrdStat;
 import org.beigesoft.webstore.model.EPaymentMethod;
 import org.beigesoft.webstore.model.Purch;
@@ -72,8 +73,7 @@ import org.beigesoft.webstore.service.ICncOrd;
  * <ul>
  * <li>phase 1 - accept (book) all buyer's new orders, if OK, then
  * creates PayPal payment, then add payment as "pplPmt" to request attributes
- * to response JSON payment id. If there is order with invoice basis tax
- * method, then all orders will be canceled.
+ * to response JSON payment id.
  * </li>
  * <li>phase 2 - buyer accept payment and sent buyerId, so
  * this service executes payment</li>
@@ -202,7 +202,8 @@ public class PrPpl<RS> implements IProcessor {
             this.srvDb.setIsAutocommit(false);
             this.srvDb.setTransactionIsolation(setAdd.getBkTr());
             this.srvDb.beginTransaction();
-            if (selId == null) {
+            if (setAdd.getOnlMd() == 1 || selId == null) {
+              //Owner is only online payee:
               List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
                 PayMd.class, "where ITSNAME='PAYPAL'");
               if (payMds.size() == 1) {
@@ -316,7 +317,6 @@ public class PrPpl<RS> implements IProcessor {
       if (cart != null) {
         Purch pur = this.acpOrd.accept(pRqVs, pRqDt, cart.getBuyer());
         CustOrder ord = null;
-        //CuOrSe sord = null;
         SeSeller sel = null;
         List<CustOrder> ppords = null;
         List<CuOrSe> ppsords = null;
@@ -341,7 +341,7 @@ public class PrPpl<RS> implements IProcessor {
                 if (ppsords == null) {
                   ppsords = new ArrayList<CuOrSe>();
                   sel = or.getSel();
-                } else if (!sel.getItsId().getItsId()
+                } else if (pSetAdd.getOnlMd() == 0 && !sel.getItsId().getItsId()
                   .equals(or.getSel().getItsId().getItsId())) {
                   throw new Exception("Several S.E.Payee in purchase!");
                 }
@@ -351,38 +351,65 @@ public class PrPpl<RS> implements IProcessor {
           }
         }
         PayMd payMd = null;
-        if (!(ppords != null && ppords.size() > 0
+        if (pSetAdd.getOnlMd() == 1 || ppords != null && ppsords == null) {
+          //payee - owner
+          if (payMds.size() != 1) {
+            throw new Exception("There is no properly PPL PayMd");
+          } else {
+            payMd = payMds.get(0);
+          }
+        } else { //there is only payee - S.E.seller:
+          SePayMd payMdSe = null;
+          for (SePayMd pm : payMdsSe) {
+            if (payMdSe == null && sel.getItsId().getItsId()
+              .equals(pm.getSeller().getItsId().getItsId())) {
+              payMdSe = pm;
+              payMd = pm;
+            } else if (payMdSe != null && payMdSe.getSeller().getItsId()
+              .getItsId().equals(pm.getSeller().getItsId().getItsId())) {
+              throw new Exception(
+                "There is no properly PPL SePayMd for seller#"
+                  + sel.getItsId().getItsId());
+            }
+          }
+        }
+        if (!(ppords != null
           && ppsords != null && ppsords.size() > 0)) {
           if (ppords != null && ppords.size() > 0) {
             //proceed PayPal orders:
-            if (payMds.size() != 1) {
-              throw new Exception("There is no properly PPL PayMd");
-            } else {
-              payMd = payMds.get(0);
-            }
             ord = makePplOrds(pRqVs, pRqDt, ppords, cart, CustOrderGdLn.class,
               CustOrderSrvLn.class, CustOrderTxLn.class);
             ord.setCurr(ppords.get(0).getCurr());
             ord.setPur(ppords.get(0).getPur());
-          } else if (ppsords != null && ppsords.size() > 0) {
+          }
+          if (ppsords != null && ppsords.size() > 0) {
             //proceed PayPal S.E. orders:
-            SePayMd payMdSe = null;
-            for (SePayMd pm : payMdsSe) {
-              if (payMdSe == null && sel.getItsId().getItsId()
-                .equals(pm.getSeller().getItsId().getItsId())) {
-                payMdSe = pm;
-                payMd = pm;
-              } else if (payMdSe != null && payMdSe.getSeller().getItsId()
-                .getItsId().equals(pm.getSeller().getItsId().getItsId())) {
-                throw new Exception(
-                  "There is no properly PPL SePayMd for seller#"
-                    + sel.getItsId().getItsId());
+            if (ord == null) {
+              ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
+                CuOrSeSrLn.class, CuOrSeTxLn.class);
+              ord.setCurr(ppsords.get(0).getCurr());
+              ord.setPur(ppsords.get(0).getPur());
+            } else {
+              CustOrder sord = makePplOrds(pRqVs, pRqDt, ppsords, cart,
+                CuOrSeGdLn.class, CuOrSeSrLn.class, CuOrSeTxLn.class);
+              if (sord.getGoods() != null) {
+                if (ord.getGoods() != null) {
+                  ord.getGoods().addAll(sord.getGoods());
+                } else {
+                  ord.setGoods(sord.getGoods());
+                }
               }
+              if (sord.getServs() != null) {
+                if (ord.getServs() != null) {
+                  ord.getServs().addAll(sord.getServs());
+                } else {
+                  ord.setServs(sord.getServs());
+                }
+              }
+              ord.setTot(ord.getTot().add(sord.getTot()));
+              ord.setTotTx(ord.getTotTx().add(sord.getTotTx()));
+              ord.setSubt(ord.getSubt().add(sord.getSubt()));
             }
-            ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
-              CuOrSeSrLn.class, CuOrSeTxLn.class);
-            ord.setCurr(ppsords.get(0).getCurr());
-            ord.setPur(ppsords.get(0).getPur());
           }
         }
         if (ord != null) {
@@ -494,73 +521,55 @@ public class PrPpl<RS> implements IProcessor {
     List<CustOrderSrvLn> servs = null;
     //checking invoice basis tax:
     Set<String> ndFl = new HashSet<String>();
-    ndFl.add("itsId");
-    String tbn = pTlCl.getSimpleName();
+    ndFl.add("itsName");
+    ndFl.add("price");
+    ndFl.add("quant");
+    ndFl.add("subt");
+    ndFl.add("tot");
+    ndFl.add("totTx");
+    String tbn = pGlCl.getSimpleName();
     pRqVs.put(tbn + "neededFields", ndFl);
-    List<TL> ibtxls = this.srvOrm.retrieveListWithConditions(
-      pRqVs, pTlCl, "where TAXAB>0 and ITSOWNER in ("
-        + ordIds.toString() + ")");
+    List<GL> gls = this.srvOrm.retrieveListWithConditions(pRqVs,
+      pGlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
     pRqVs.remove(tbn + "neededFields");
-    if (ibtxls.size() == 0) {
-      ndFl.add("itsName");
-      ndFl.add("price");
-      ndFl.add("quant");
-      ndFl.add("subt");
-      ndFl.add("tot");
-      ndFl.add("totTx");
-      tbn = pGlCl.getSimpleName();
-      pRqVs.put(tbn + "neededFields", ndFl);
-      List<GL> gls = this.srvOrm.retrieveListWithConditions(pRqVs,
-        pGlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
-      pRqVs.remove(tbn + "neededFields");
-      if (gls.size() > 0) {
-        if (pGlCl == CustOrderGdLn.class) {
-          goods = (List<CustOrderGdLn>) gls;
-        } else {
-          goods = new ArrayList<CustOrderGdLn>();
-          for (GL il : gls) {
-            CustOrderGdLn itm = new CustOrderGdLn();
-            itm.setItsId(il.getItsId());
-            itm.setItsName(il.getItsName());
-            itm.setPrice(il.getPrice());
-            itm.setQuant(il.getQuant());
-            itm.setSubt(il.getSubt());
-            itm.setTot(il.getTot());
-            itm.setTotTx(il.getTotTx());
-          }
-        }
-      }
-      tbn = pSlCl.getSimpleName();
-      pRqVs.put(tbn + "neededFields", ndFl);
-      List<SL> sls = this.srvOrm.retrieveListWithConditions(pRqVs,
-        pSlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
-      pRqVs.remove(tbn + "neededFields");
-      if (sls.size() > 0) {
-        if (pSlCl == CustOrderSrvLn.class) {
-          servs = (List<CustOrderSrvLn>) sls;
-        } else {
-          servs = new ArrayList<CustOrderSrvLn>();
-          for (SL il : sls) {
-            CustOrderSrvLn itm = new CustOrderSrvLn();
-            itm.setItsId(il.getItsId());
-            itm.setItsName(il.getItsName());
-            itm.setPrice(il.getPrice());
-            itm.setQuant(il.getQuant());
-            itm.setSubt(il.getSubt());
-            itm.setTot(il.getTot());
-            itm.setTotTx(il.getTotTx());
-          }
-        }
-      }
-    } else {
-      String err = "Invoice basis PPL!";
-      pCart.setErr(true);
-      if (pCart.getDescr() == null) {
-        pCart.setDescr(err);
+    if (gls.size() > 0) {
+      if (pGlCl == CustOrderGdLn.class) {
+        goods = (List<CustOrderGdLn>) gls;
       } else {
-        pCart.setDescr(pCart.getDescr() + err);
+        goods = new ArrayList<CustOrderGdLn>();
+        for (GL il : gls) {
+          CustOrderGdLn itm = new CustOrderGdLn();
+          itm.setItsId(il.getItsId());
+          itm.setItsName(il.getItsName());
+          itm.setPrice(il.getPrice());
+          itm.setQuant(il.getQuant());
+          itm.setSubt(il.getSubt());
+          itm.setTot(il.getTot());
+          itm.setTotTx(il.getTotTx());
+        }
       }
-      this.srvOrm.updateEntity(pRqVs, pCart);
+    }
+    tbn = pSlCl.getSimpleName();
+    pRqVs.put(tbn + "neededFields", ndFl);
+    List<SL> sls = this.srvOrm.retrieveListWithConditions(pRqVs,
+      pSlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
+    pRqVs.remove(tbn + "neededFields");
+    if (sls.size() > 0) {
+      if (pSlCl == CustOrderSrvLn.class) {
+        servs = (List<CustOrderSrvLn>) sls;
+      } else {
+        servs = new ArrayList<CustOrderSrvLn>();
+        for (SL il : sls) {
+          CustOrderSrvLn itm = new CustOrderSrvLn();
+          itm.setItsId(il.getItsId());
+          itm.setItsName(il.getItsName());
+          itm.setPrice(il.getPrice());
+          itm.setQuant(il.getQuant());
+          itm.setSubt(il.getSubt());
+          itm.setTot(il.getTot());
+          itm.setTotTx(il.getTotTx());
+        }
+      }
     }
     if (goods != null || servs != null) {
       ord = new CustOrder();
@@ -609,14 +618,15 @@ public class PrPpl<RS> implements IProcessor {
   public final void createPay(final Map<String, Object> pRqVs,
     final IRequestData pRqDt, final CustOrder pOrd,
       final PayMd pPayMd, final SeSeller pSel) throws Exception {
+    AccSettings as = (AccSettings) pRqVs.get("accSet");
     APIContext apiCon = new APIContext(pPayMd.getSec1(), pPayMd.getSec2(),
       pPayMd.getMde());
     Details details = new Details();
     //TODO special headed service "shipping"
     //details.setShipping("1");
-    details.setSubtotal(prn(pOrd.getSubt(), 2));
+    details.setSubtotal(prn(pOrd.getSubt(), as.getPricePrecision()));
     if (pOrd.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-      details.setTax(prn(pOrd.getTotTx(), 2));
+      details.setTax(prn(pOrd.getTotTx(), as.getPricePrecision()));
     }
     if (getLog().getIsShowDebugMessagesFor(getClass())
       && getLog().getDetailLevel() > 42000) {
@@ -626,7 +636,7 @@ public class PrPpl<RS> implements IProcessor {
     }
     Amount amount = new Amount();
     amount.setCurrency(pOrd.getCurr().getStCo());
-    amount.setTotal(prn(pOrd.getTot(), 2));
+    amount.setTotal(prn(pOrd.getTot(), as.getPricePrecision()));
     amount.setDetails(details);
     Transaction transaction = new Transaction();
     transaction.setAmount(amount);
@@ -644,9 +654,9 @@ public class PrPpl<RS> implements IProcessor {
         item.setName(il.getItsName());
         item.setQuantity(Long.valueOf(il.getQuant().longValue()).toString());
         item.setCurrency(pOrd.getCurr().getStCo());
-        item.setPrice(prn(il.getPrice(), 2));
+        item.setPrice(prn(il.getPrice(), as.getPricePrecision()));
         if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-          item.setTax(prn(il.getTotTx(), 2));
+          item.setTax(prn(il.getTotTx(), as.getPricePrecision()));
         }
         items.add(item);
       }
@@ -663,9 +673,9 @@ public class PrPpl<RS> implements IProcessor {
         item.setName(il.getItsName());
         item.setQuantity(Long.valueOf(il.getQuant().longValue()).toString());
         item.setCurrency(pOrd.getCurr().getStCo());
-        item.setPrice(prn(il.getPrice(), 2));
+        item.setPrice(prn(il.getPrice(), as.getPricePrecision()));
         if (il.getTotTx().compareTo(BigDecimal.ZERO) == 1) {
-          item.setTax(prn(il.getTotTx(), 2));
+          item.setTax(prn(il.getTotTx(), as.getPricePrecision()));
         }
         items.add(item);
       }
