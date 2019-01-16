@@ -37,7 +37,9 @@ import com.paypal.base.rest.APIContext;
 
 import org.beigesoft.model.IRequestData;
 import org.beigesoft.model.IHasIdLongVersion;
+import org.beigesoft.model.ColumnsValues;
 import org.beigesoft.log.ILogger;
+import org.beigesoft.handler.ISpamHnd;
 import org.beigesoft.service.IProcessor;
 import org.beigesoft.service.ISrvOrm;
 import org.beigesoft.service.ISrvDatabase;
@@ -65,6 +67,7 @@ import org.beigesoft.webstore.persistable.SettingsAdd;
 import org.beigesoft.webstore.service.ISrvShoppingCart;
 import org.beigesoft.webstore.service.IAcpOrd;
 import org.beigesoft.webstore.service.ICncOrd;
+import org.beigesoft.webstore.service.IBuySr;
 
 /**
  * <p>Service that makes orders payed through PayPal.
@@ -144,39 +147,45 @@ public class PrPpl<RS> implements IProcessor {
   private final Map<String, String> pmts = new HashMap<String, String>();
 
   /**
+   * <p>Buyer service.</p>
+   **/
+  private IBuySr buySr;
+
+  /**
+   * <p>Spam handler.</p>
+   **/
+  private ISpamHnd spamHnd;
+
+  /**
    * <p>Process entity request.</p>
    * @param pRqVs request scoped vars
    * @param pRqDt Request Data
    * @throws Exception - an exception
    **/
   @Override
-  public final void process(final Map<String, Object> pRqVs,
+  public final synchronized void process(final Map<String, Object> pRqVs,
     final IRequestData pRqDt) throws Exception {
     if (!pRqDt.getReqUrl().toString().toLowerCase().startsWith("https")) {
       throw new Exception("PPL http not supported!!!");
     }
     SettingsAdd setAdd = (SettingsAdd) pRqVs.get("setAdd");
-    String puid = pRqDt.getParameter("puid");
-    chkOutDated(pRqVs, puid, setAdd);
-    if (puid != null) {
-      String paymentID = this.pmts.get(puid);
-      if (paymentID != null) {
-        OnlineBuyer buyer = new OnlineBuyer();
-        int idxP = puid.indexOf("p");
-        int idxT = puid.indexOf("t");
-        int idxS = puid.indexOf("s");
-        String buyIdStr = puid.substring(0, idxP);
-        String purIdStr = puid.substring(idxP + 1, idxT);
-        Long prId = Long.parseLong(purIdStr);
-        buyer.setItsId(Long.parseLong(buyIdStr));
-        Long selId = null;
-        if (idxS != -1) {
-          selId = Long.parseLong(puid.substring(idxS + 1));
-        }
-        this.pmts.remove(puid);
-        String cnc = pRqDt.getParameter("cnc");
-        if (cnc != null) {
-          //cancel request:
+    chkOutDated(pRqVs, setAdd);
+    if (pRqDt.getParameter("payerID") != null) {
+      //execution payment:
+      phase2(pRqVs, pRqDt, setAdd);
+    } else {
+      String puid = pRqDt.getParameter("puid");
+      if (puid != null) { //cancel/return (not from client?):
+        String paymentID = this.pmts.get(puid);
+        if (paymentID != null) {
+          OnlineBuyer buyer = new OnlineBuyer();
+          int idxP = puid.indexOf("p");
+          int idxT = puid.indexOf("t");
+          String buyIdStr = puid.substring(0, idxP);
+          String purIdStr = puid.substring(idxP + 1, idxT);
+          Long prId = Long.parseLong(purIdStr);
+          buyer.setItsId(Long.parseLong(buyIdStr));
+          this.pmts.remove(puid);
           try {
             this.srvDb.setIsAutocommit(false);
             this.srvDb.setTransactionIsolation(setAdd.getBkTr());
@@ -193,102 +202,155 @@ public class PrPpl<RS> implements IProcessor {
             this.srvDb.releaseResources();
           }
           pRqDt.setAttribute("pplPayId", paymentID);
-          pRqDt.setAttribute("pplStat", "canceled");
-        } else {
-          //phase 2, executing payment:
-          String payerID = pRqDt.getParameter("payerID");
-          PayMd payMd = null;
-          try {
-            this.srvDb.setIsAutocommit(false);
-            this.srvDb.setTransactionIsolation(setAdd.getBkTr());
-            this.srvDb.beginTransaction();
-            if (setAdd.getOnlMd() == 1 || selId == null) {
-              //Owner is only online payee:
-              List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
-                PayMd.class, "where ITSNAME='PAYPAL'");
-              if (payMds.size() == 1) {
-                payMd = payMds.get(0);
-              }
-            } else {
-              List<SePayMd> payMds = this.srvOrm.retrieveListWithConditions(
-               pRqVs, SePayMd.class, "where ITSNAME='PAYPAL' and SEL=" + selId);
-              if (payMds.size() == 1) {
-                payMd = payMds.get(0);
-              }
-            }
-            if (!(payerID != null && payMd != null)) {
-              this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
-                EOrdStat.NEW);
-            }
-            this.srvDb.commitTransaction();
-          } catch (Exception ex) {
-            if (!this.srvDb.getIsAutocommit()) {
-              this.srvDb.rollBackTransaction();
-            }
-            throw ex;
-          } finally {
-            this.srvDb.releaseResources();
-          }
-          if (payerID != null && payMd != null) {
-            try {
-              APIContext apiCon = new APIContext(payMd.getSec1(),
-                payMd.getSec2(), payMd.getMde());
-              Payment pay = new Payment();
-              pay.setId(paymentID);
-              PaymentExecution payExec = new PaymentExecution();
-              payExec.setPayerId(payerID);
-              pay.execute(apiCon, payExec);
-              pRqDt.setAttribute("pplPayId", pay.getId());
-              pRqDt.setAttribute("pplStat", "executed");
-            } catch (Exception e) {
-              this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
-                EOrdStat.NEW);
-              throw e;
-            }
-            try {
-              this.srvDb.setIsAutocommit(false);
-              this.srvDb.setTransactionIsolation(setAdd.getBkTr());
-              this.srvDb.beginTransaction();
-              if (selId == null) {
-                List<CustOrder> ords = this.srvOrm.retrieveListWithConditions(
-                  pRqVs, CustOrder.class, "where PAYMETH in(9,10) and BUYER="
-                    + buyIdStr + " and PUR=" + purIdStr);
-                for (CustOrder or : ords) {
-                  or.setStat(EOrdStat.PAYED);
-                  this.srvOrm.updateEntity(pRqVs, or);
-                }
-              } else {
-                List<CuOrSe> ords = this.srvOrm.retrieveListWithConditions(
-                  pRqVs, CuOrSe.class, "where PAYMETH in(9,10) and BUYER="
-                    + buyIdStr + " and PUR=" + purIdStr + " and SEL=" + selId);
-                for (CuOrSe or : ords) {
-                  or.setStat(EOrdStat.PAYED);
-                  this.srvOrm.updateEntity(pRqVs, or);
-                }
-              }
-              this.srvCart.emptyCart(pRqVs, buyer);
-              this.srvDb.commitTransaction();
-            } catch (Exception ex) {
-              if (!this.srvDb.getIsAutocommit()) {
-                this.srvDb.rollBackTransaction();
-              }
-              throw ex;
-            } finally {
-              this.srvDb.releaseResources();
-            }
+          String cnc = pRqDt.getParameter("cnc");
+          if (cnc != null) {
+            pRqDt.setAttribute("pplStat", "canceled");
           } else {
-            throw new Exception("Can't execute PPL payment!");
+            pRqDt.setAttribute("pplStat", "return");
           }
+        } else {
+          this.spamHnd.handle(pRqVs, pRqDt, 100,
+            "PrPpl. error? puid not found: " + puid);
+          this.secLog.error(pRqVs, PrPpl.class, "puid not found: " + puid);
         }
+      } else {
+        //phase 1, creating payment:
+        phase1(pRqVs, pRqDt, setAdd);
       }
-    } else {
-      //phase 1, creating payment:
-      phase1(pRqVs, pRqDt, setAdd);
     }
   }
 
   /**
-   * <p>It makes phase 1.</p>
+   * <p>It makes phase 2 - execution payment.</p>
+   * @param pRqVs request scoped vars
+   * @param pRqDt Request Data
+   * @param pSetAdd SettingsAdd
+   * @throws Exception - an exception
+   **/
+  public final void phase2(final Map<String, Object> pRqVs,
+    final IRequestData pRqDt, final SettingsAdd pSetAdd) throws Exception {
+    //phase 2, executing payment:
+    OnlineBuyer buyer = this.buySr.getAuthBuyr(pRqVs, pRqDt);
+    if (buyer == null) {
+      this.spamHnd.handle(pRqVs, pRqDt, 1000, "PrPpl. buyer auth err!");
+      return;
+    }
+    String payerID = pRqDt.getParameter("payerID");
+    String paymentID = pRqDt.getParameter("paymentID");
+    String puid = null;
+    for (Map.Entry<String,  String> ent : this.pmts.entrySet()) {
+      if (ent.getValue().equals(paymentID)) {
+        puid = ent.getKey();
+      }
+    }
+    int idxP = puid.indexOf("p");
+    int idxT = puid.indexOf("t");
+    int idxS = puid.indexOf("s");
+    String buyIdStr = puid.substring(0, idxP);
+    String purIdStr = puid.substring(idxP + 1, idxT);
+    Long prId = Long.parseLong(purIdStr);
+    buyer.setItsId(Long.parseLong(buyIdStr));
+    Long selId = null;
+    if (idxS != -1) {
+      selId = Long.parseLong(puid.substring(idxS + 1));
+    }
+    this.pmts.remove(puid);
+    PayMd payMd = null;
+    try {
+      this.srvDb.setIsAutocommit(false);
+      this.srvDb.setTransactionIsolation(pSetAdd.getBkTr());
+      this.srvDb.beginTransaction();
+      if (pSetAdd.getOnlMd() == 1 || selId == null) {
+        //Owner is only online payee:
+        List<PayMd> payMds = this.srvOrm.retrieveListWithConditions(pRqVs,
+          PayMd.class, "where ITSNAME='PAYPAL'");
+        if (payMds.size() == 1) {
+          payMd = payMds.get(0);
+        }
+      } else {
+        List<SePayMd> payMds = this.srvOrm.retrieveListWithConditions(
+         pRqVs, SePayMd.class, "where ITSNAME='PAYPAL' and SEL=" + selId);
+        if (payMds.size() == 1) {
+          payMd = payMds.get(0);
+        }
+      }
+      if (payMd == null) {
+        this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
+          EOrdStat.NEW);
+      }
+      this.srvDb.commitTransaction();
+    } catch (Exception ex) {
+      if (!this.srvDb.getIsAutocommit()) {
+        this.srvDb.rollBackTransaction();
+      }
+      throw ex;
+    } finally {
+      this.srvDb.releaseResources();
+    }
+    if (payMd != null) {
+      try {
+        APIContext apiCon = new APIContext(payMd.getSec1(),
+          payMd.getSec2(), payMd.getMde());
+        Payment pay = new Payment();
+        pay.setId(paymentID);
+        PaymentExecution payExec = new PaymentExecution();
+        payExec.setPayerId(payerID);
+        pay.execute(apiCon, payExec);
+        pRqDt.setAttribute("pplPayId", pay.getId());
+        pRqDt.setAttribute("pplStat", "executed");
+      } catch (Exception e) {
+        this.cncOrd.cancel(pRqVs, buyer, prId, EOrdStat.BOOKED,
+          EOrdStat.NEW);
+        throw e;
+      }
+      try {
+        this.srvDb.setIsAutocommit(false);
+        this.srvDb.setTransactionIsolation(pSetAdd.getBkTr());
+        this.srvDb.beginTransaction();
+        if (pSetAdd.getOpMd() == 0) {
+          String[] fieldsNames = new String[] {"itsId", "itsVersion", "stat"};
+          List<CustOrder> ords = this.srvOrm.retrieveListWithConditions(
+            pRqVs, CustOrder.class, "where PAYMETH in(9,10) and BUYER="
+              + buyIdStr + " and PUR=" + purIdStr);
+          List<CuOrSe> sords = this.srvOrm.retrieveListWithConditions(
+            pRqVs, CuOrSe.class, "where PAYMETH in(9,10) and BUYER="
+              + buyIdStr + " and PUR=" + purIdStr);
+          pRqVs.put("fieldsNames", fieldsNames);
+          for (CustOrder or : ords) {
+            or.setStat(EOrdStat.PAYED);
+            this.srvOrm.updateEntity(pRqVs, or);
+          }
+          for (CuOrSe or : sords) {
+            or.setStat(EOrdStat.PAYED);
+            this.srvOrm.updateEntity(pRqVs, or);
+          }
+          pRqVs.remove("fieldsNames");
+        } else {
+          ColumnsValues cvs = new ColumnsValues();
+          cvs.put("itsVersion", new Date().getTime());
+          cvs.put("stat", EOrdStat.BOOKED.ordinal());
+          this.srvDb.executeUpdate("CUSTORDER", cvs,
+            "PAYMETH in(9,10) and BUYER=" + buyIdStr + " and PUR=" + purIdStr);
+          this.srvDb.executeUpdate("CUORDERSE", cvs,
+            "PAYMETH in(9,10) and BUYER=" + buyIdStr + " and PUR=" + purIdStr);
+        }
+        this.srvCart.emptyCart(pRqVs, buyer);
+        this.srvDb.commitTransaction();
+      } catch (Exception ex) {
+        if (!this.srvDb.getIsAutocommit()) {
+          this.srvDb.rollBackTransaction();
+        }
+        throw ex;
+      } finally {
+        this.srvDb.releaseResources();
+      }
+    } else {
+      throw new Exception("Can't execute PPL payment!");
+    }
+  }
+
+  /**
+   * <p>It makes phase 1 - create payment.</p>
    * @param pRqVs request scoped vars
    * @param pRqDt Request Data
    * @param pSetAdd SettingsAdd
@@ -305,7 +367,8 @@ public class PrPpl<RS> implements IProcessor {
       this.srvDb.setIsAutocommit(false);
       this.srvDb.setTransactionIsolation(pSetAdd.getBkTr());
       this.srvDb.beginTransaction();
-      cart = this.srvCart.getShoppingCart(pRqVs, pRqDt, false);
+      //it must be request from authorized buyer's browser:
+      cart = this.srvCart.getShoppingCart(pRqVs, pRqDt, false, true);
       if (cart != null && cart.getErr()) {
         cart = null;
       } else if (cart != null) {
@@ -406,6 +469,13 @@ public class PrPpl<RS> implements IProcessor {
                   ord.setServs(sord.getServs());
                 }
               }
+              if (sord.getTaxes() != null) {
+                if (ord.getTaxes() != null) {
+                  ord.getTaxes().addAll(sord.getTaxes());
+                } else {
+                  ord.setTaxes(sord.getTaxes());
+                }
+              }
               ord.setTot(ord.getTot().add(sord.getTot()));
               ord.setTotTx(ord.getTotTx().add(sord.getTotTx()));
               ord.setSubt(ord.getSubt().add(sord.getSubt()));
@@ -417,6 +487,8 @@ public class PrPpl<RS> implements IProcessor {
         } else {
           throw new Exception("Can't create PPL payment!");
         }
+      } else {
+        this.spamHnd.handle(pRqVs, pRqDt, 1000, "PrPpl. buyer auth err!");
       }
       this.srvDb.commitTransaction();
     } catch (Exception ex) {
@@ -432,39 +504,36 @@ public class PrPpl<RS> implements IProcessor {
   /**
    * <p>It checks for outdated booked orders (20min) and cancels them.</p>
    * @param pRqVs request scoped vars
-   * @param pPuId purchase ID, maybe NULL
    * @param pSetAdd SettingsAdd
    * @throws Exception - an exception
    **/
   public final void chkOutDated(final Map<String, Object> pRqVs,
-    final String pPuId, final SettingsAdd pSetAdd) throws Exception {
+    final SettingsAdd pSetAdd) throws Exception {
     long now = new Date().getTime();
     List<OnlineBuyer> brs = null;
     List<Long> prs = null;
     for (String puid : this.pmts.keySet()) {
-      if (pPuId != null && !pPuId.equals(puid)) {
-        int idxT = puid.indexOf("t");
-        int idxS = puid.indexOf("s");
-        long puTi;
-        if (idxS == -1) {
-          puTi = Long.parseLong(puid.substring(idxS + 1));
-        } else {
-          puTi = Long.parseLong(puid.substring(idxS + 1, idxS));
+      int idxT = puid.indexOf("t");
+      int idxS = puid.indexOf("s");
+      long puTi;
+      if (idxS == -1) {
+        puTi = Long.parseLong(puid.substring(idxT + 1));
+      } else {
+        puTi = Long.parseLong(puid.substring(idxT + 1, idxS));
+      }
+      if (now - puTi > 72000000) {
+        getSecLog().warn(pRqVs, PrPpl.class, "Outdated purchase: " + puid);
+        int idxP = puid.indexOf("p");
+        Long buyerId = Long.parseLong(puid.substring(0, idxP));
+        Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
+        OnlineBuyer buyer = new OnlineBuyer();
+        buyer.setItsId(buyerId);
+        if (brs == null) {
+          brs = new ArrayList<OnlineBuyer>();
+          prs = new ArrayList<Long>();
         }
-        if (now - puTi > 72000000) {
-          getSecLog().warn(pRqVs, PrPpl.class, "Outdated purchase: " + puid);
-          int idxP = puid.indexOf("p");
-          Long buyerId = Long.parseLong(puid.substring(0, idxP));
-          Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
-          OnlineBuyer buyer = new OnlineBuyer();
-          buyer.setItsId(buyerId);
-          if (brs == null) {
-            brs = new ArrayList<OnlineBuyer>();
-            prs = new ArrayList<Long>();
-          }
-          brs.add(buyer);
-          prs.add(prId);
-        }
+        brs.add(buyer);
+        prs.add(prId);
       }
     }
     if (brs != null) {
@@ -519,6 +588,7 @@ public class PrPpl<RS> implements IProcessor {
     }
     List<CustOrderGdLn> goods = null;
     List<CustOrderSrvLn> servs = null;
+    List<CustOrderTxLn> taxs = null;
     //checking invoice basis tax:
     Set<String> ndFl = new HashSet<String>();
     ndFl.add("itsName");
@@ -546,6 +616,7 @@ public class PrPpl<RS> implements IProcessor {
           itm.setSubt(il.getSubt());
           itm.setTot(il.getTot());
           itm.setTotTx(il.getTotTx());
+          goods.add(itm);
         }
       }
     }
@@ -568,6 +639,7 @@ public class PrPpl<RS> implements IProcessor {
           itm.setSubt(il.getSubt());
           itm.setTot(il.getTot());
           itm.setTotTx(il.getTotTx());
+          servs.add(itm);
         }
       }
     }
@@ -599,6 +671,32 @@ public class PrPpl<RS> implements IProcessor {
           ord.setTot(ord.getTot().add(il.getTot()));
           ord.setTotTx(ord.getTotTx().add(il.getTotTx()));
           ord.setSubt(ord.getSubt().add(il.getSubt()));
+        }
+      }
+      if (ord.getTotTx().compareTo(BigDecimal.ZERO) == 0) {
+        //invoice basis:
+        tbn = pTlCl.getSimpleName();
+        ndFl.clear();
+        ndFl.add("itsId");
+        ndFl.add("totTx");
+        pRqVs.put(tbn + "neededFields", ndFl);
+        List<TL> tls = this.srvOrm.retrieveListWithConditions(pRqVs,
+          pTlCl, "where ITSOWNER in (" + ordIds.toString() + ")");
+        pRqVs.remove(tbn + "neededFields");
+        if (tls.size() > 0) {
+          if (pTlCl == CustOrderTxLn.class) {
+            taxs = (List<CustOrderTxLn>) tls;
+          } else {
+            taxs = new ArrayList<CustOrderTxLn>();
+            for (TL tl : tls) {
+              CustOrderTxLn tln = new CustOrderTxLn();
+              tln.setItsId(tl.getItsId());
+              tln.setTot(tl.getTot());
+              taxs.add(tln);
+              ord.setTotTx(ord.getTotTx().add(tl.getTot()));
+            }
+          }
+          ord.setTaxes(taxs);
         }
       }
     }
@@ -697,9 +795,10 @@ public class PrPpl<RS> implements IProcessor {
     if (pSel != null) {
       puid = puid + "s" + pSel.getItsId().getItsId();
     }
-    String u = pRqDt.getReqUrl().toString();
-    redUrls.setCancelUrl(u + "?nmPrc=PrPpl&nmRnd=ppl&cnc=1&puid=" + puid);
-    redUrls.setReturnUrl(u + "?nmPrc=PrPpl&nmRnd=ppl&puid=" + puid);
+    String u = pRqDt.getReqUrl().toString() + "?nmPrcRed=" + pRqDt
+      .getParameter("nmPrcRed") + "&nmRndRed=" + pRqDt.getParameter("nmRndRed");
+    redUrls.setCancelUrl(u + "&nmPrc=PrPpl&nmRnd=ppl&cnc=1&puid=" + puid);
+    redUrls.setReturnUrl(u + "&nmPrc=PrPpl&nmRnd=ppl&puid=" + puid);
     payment.setRedirectUrls(redUrls);
     Payment crPay = payment.create(apiCon);
     Iterator<Links> links = crPay.getLinks().iterator();
@@ -856,5 +955,37 @@ public class PrPpl<RS> implements IProcessor {
    **/
   public final void setSrvNumToStr(final ISrvNumberToString pSrvNumToStr) {
     this.srvNumToStr = pSrvNumToStr;
+  }
+
+  /**
+   * <p>Getter for buySr.</p>
+   * @return IBuySr
+   **/
+  public final IBuySr getBuySr() {
+    return this.buySr;
+  }
+
+  /**
+   * <p>Setter for buySr.</p>
+   * @param pBuySr reference
+   **/
+  public final void setBuySr(final IBuySr pBuySr) {
+    this.buySr = pBuySr;
+  }
+
+  /**
+   * <p>Getter for spamHnd.</p>
+   * @return ISpamHnd
+   **/
+  public final ISpamHnd getSpamHnd() {
+    return this.spamHnd;
+  }
+
+  /**
+   * <p>Setter for spamHnd.</p>
+   * @param pSpamHnd reference
+   **/
+  public final void setSpamHnd(final ISpamHnd pSpamHnd) {
+    this.spamHnd = pSpamHnd;
   }
 }
