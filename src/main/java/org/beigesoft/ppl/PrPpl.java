@@ -157,7 +157,7 @@ public class PrPpl<RS> implements IProcessor {
   private ISpamHnd spamHnd;
 
   /**
-   * <p>Process entity request.</p>
+   * <p>Process request.</p>
    * @param pRqVs request scoped vars
    * @param pRqDt Request Data
    * @throws Exception - an exception
@@ -218,6 +218,7 @@ public class PrPpl<RS> implements IProcessor {
         phase1(pRqVs, pRqDt, setAdd);
       }
     }
+    pRqDt.setAttribute("nmRnd", "ppl");
   }
 
   /**
