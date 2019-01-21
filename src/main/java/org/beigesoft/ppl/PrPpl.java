@@ -157,26 +157,34 @@ public class PrPpl<RS> implements IProcessor {
   private ISpamHnd spamHnd;
 
   /**
+   * <p>Last time outdated checking.</p>
+   **/
+  private final Date tmOutDtCheck = new Date();
+
+  /**
    * <p>Process request.</p>
    * @param pRqVs request scoped vars
    * @param pRqDt Request Data
    * @throws Exception - an exception
    **/
   @Override
-  public final synchronized void process(final Map<String, Object> pRqVs,
+  public final void process(final Map<String, Object> pRqVs,
     final IRequestData pRqDt) throws Exception {
     if (!pRqDt.getReqUrl().toString().toLowerCase().startsWith("https")) {
       throw new Exception("PPL http not supported!!!");
     }
     SettingsAdd setAdd = (SettingsAdd) pRqVs.get("setAdd");
-    chkOutDated(pRqVs, setAdd);
-    if (pRqDt.getParameter("payerID") != null) {
+    String payerID = pRqDt.getParameter("payerID");
+    if (payerID != null) {
       //execution payment:
-      phase2(pRqVs, pRqDt, setAdd);
+      phase2(pRqVs, pRqDt, setAdd, payerID);
     } else {
       String puid = pRqDt.getParameter("puid");
       if (puid != null) { //cancel/return (not from client?):
-        String paymentID = this.pmts.get(puid);
+        String paymentID;
+        synchronized (this.pmts) {
+          paymentID = this.pmts.get(puid);
+        }
         if (paymentID != null) {
           OnlineBuyer buyer = new OnlineBuyer();
           int idxP = puid.indexOf("p");
@@ -185,7 +193,9 @@ public class PrPpl<RS> implements IProcessor {
           String purIdStr = puid.substring(idxP + 1, idxT);
           Long prId = Long.parseLong(purIdStr);
           buyer.setItsId(Long.parseLong(buyIdStr));
-          this.pmts.remove(puid);
+          synchronized (this.pmts) {
+            this.pmts.remove(puid);
+          }
           try {
             this.srvDb.setIsAutocommit(false);
             this.srvDb.setTransactionIsolation(setAdd.getBkTr());
@@ -219,6 +229,7 @@ public class PrPpl<RS> implements IProcessor {
       }
     }
     pRqDt.setAttribute("nmRnd", "ppl");
+    chkOutDated(pRqVs, setAdd);
   }
 
   /**
@@ -226,23 +237,37 @@ public class PrPpl<RS> implements IProcessor {
    * @param pRqVs request scoped vars
    * @param pRqDt Request Data
    * @param pSetAdd SettingsAdd
+   * @param pPayerId Payer ID
    * @throws Exception - an exception
    **/
   public final void phase2(final Map<String, Object> pRqVs,
-    final IRequestData pRqDt, final SettingsAdd pSetAdd) throws Exception {
+    final IRequestData pRqDt, final SettingsAdd pSetAdd,
+      final String pPayerId) throws Exception {
     //phase 2, executing payment:
     OnlineBuyer buyer = this.buySr.getAuthBuyr(pRqVs, pRqDt);
     if (buyer == null) {
       this.spamHnd.handle(pRqVs, pRqDt, 1000, "PrPpl. buyer auth err!");
       return;
     }
-    String payerID = pRqDt.getParameter("payerID");
     String paymentID = pRqDt.getParameter("paymentID");
+    if (paymentID == null) {
+      this.spamHnd.handle(pRqVs, pRqDt, 1000,
+        "There is no paymentID for payerID: " + pPayerId);
+      return;
+    }
     String puid = null;
-    for (Map.Entry<String,  String> ent : this.pmts.entrySet()) {
-      if (ent.getValue().equals(paymentID)) {
-        puid = ent.getKey();
+    synchronized (this.pmts) {
+      for (Map.Entry<String,  String> ent : this.pmts.entrySet()) {
+        if (ent.getValue().equals(paymentID)) {
+          puid = ent.getKey();
+          break;
+        }
       }
+    }
+    if (puid == null) {
+      this.spamHnd.handle(pRqVs, pRqDt, 1000,
+       "There is no puid for paymentID/payerID: " + paymentID + "/" + pPayerId);
+      return;
     }
     int idxP = puid.indexOf("p");
     int idxT = puid.indexOf("t");
@@ -255,7 +280,9 @@ public class PrPpl<RS> implements IProcessor {
     if (idxS != -1) {
       selId = Long.parseLong(puid.substring(idxS + 1));
     }
-    this.pmts.remove(puid);
+    synchronized (this.pmts) {
+      this.pmts.remove(puid);
+    }
     PayMd payMd = null;
     try {
       this.srvDb.setIsAutocommit(false);
@@ -295,7 +322,7 @@ public class PrPpl<RS> implements IProcessor {
         Payment pay = new Payment();
         pay.setId(paymentID);
         PaymentExecution payExec = new PaymentExecution();
-        payExec.setPayerId(payerID);
+        payExec.setPayerId(pPayerId);
         pay.execute(apiCon, payExec);
         pRqDt.setAttribute("pplPayId", pay.getId());
         pRqDt.setAttribute("pplStat", "executed");
@@ -503,38 +530,51 @@ public class PrPpl<RS> implements IProcessor {
   }
 
   /**
-   * <p>It checks for outdated booked orders (20min) and cancels them.</p>
+   * <p>It checks every 20 min for outdated booked orders and cancels them.</p>
    * @param pRqVs request scoped vars
    * @param pSetAdd SettingsAdd
    * @throws Exception - an exception
    **/
   public final void chkOutDated(final Map<String, Object> pRqVs,
     final SettingsAdd pSetAdd) throws Exception {
+    long tmInt = 72000000L;
     long now = new Date().getTime();
+    synchronized (this.tmOutDtCheck) {
+      if (now - this.tmOutDtCheck.getTime() < tmInt) {
+        return;
+      } else {
+        this.tmOutDtCheck.setTime(now);
+      }
+    }
     List<OnlineBuyer> brs = null;
     List<Long> prs = null;
-    for (String puid : this.pmts.keySet()) {
-      int idxT = puid.indexOf("t");
-      int idxS = puid.indexOf("s");
-      long puTi;
-      if (idxS == -1) {
-        puTi = Long.parseLong(puid.substring(idxT + 1));
-      } else {
-        puTi = Long.parseLong(puid.substring(idxT + 1, idxS));
-      }
-      if (now - puTi > 72000000) {
-        getSecLog().warn(pRqVs, PrPpl.class, "Outdated purchase: " + puid);
-        int idxP = puid.indexOf("p");
-        Long buyerId = Long.parseLong(puid.substring(0, idxP));
-        Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
-        OnlineBuyer buyer = new OnlineBuyer();
-        buyer.setItsId(buyerId);
-        if (brs == null) {
-          brs = new ArrayList<OnlineBuyer>();
-          prs = new ArrayList<Long>();
+    List<String> toDel = null;
+    synchronized (this.pmts) {
+      for (String puid : this.pmts.keySet()) {
+        int idxT = puid.indexOf("t");
+        int idxS = puid.indexOf("s");
+        long puTi;
+        if (idxS == -1) {
+          puTi = Long.parseLong(puid.substring(idxT + 1));
+        } else {
+          puTi = Long.parseLong(puid.substring(idxT + 1, idxS));
         }
-        brs.add(buyer);
-        prs.add(prId);
+        if (now - puTi > tmInt) {
+          getSecLog().warn(pRqVs, PrPpl.class, "Outdated purchase: " + puid);
+          int idxP = puid.indexOf("p");
+          Long buyerId = Long.parseLong(puid.substring(0, idxP));
+          Long prId = Long.parseLong(puid.substring(idxP + 1, idxT));
+          OnlineBuyer buyer = new OnlineBuyer();
+          buyer.setItsId(buyerId);
+          if (brs == null) {
+            brs = new ArrayList<OnlineBuyer>();
+            prs = new ArrayList<Long>();
+            toDel = new ArrayList<String>();
+          }
+          toDel.add(puid);
+          brs.add(buyer);
+          prs.add(prId);
+        }
       }
     }
     if (brs != null) {
@@ -547,6 +587,11 @@ public class PrPpl<RS> implements IProcessor {
             EOrdStat.BOOKED, EOrdStat.NEW);
         }
         this.srvDb.commitTransaction();
+        synchronized (this.pmts) {
+          for (String puid : toDel) {
+            this.pmts.remove(puid);
+          }
+        }
       } catch (Exception ex) {
         if (!this.srvDb.getIsAutocommit()) {
           this.srvDb.rollBackTransaction();
@@ -816,7 +861,9 @@ public class PrPpl<RS> implements IProcessor {
       getLog().debug(pRqVs, PrPpl.class,
         "Cancel URL: " + redUrls.getCancelUrl());
     }
-    this.pmts.put(puid, crPay.getId());
+    synchronized (this.pmts) {
+      this.pmts.put(puid, crPay.getId());
+    }
   }
 
   /**
