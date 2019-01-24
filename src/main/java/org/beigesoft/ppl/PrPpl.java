@@ -228,6 +228,7 @@ public class PrPpl<RS> implements IProcessor {
         phase1(pRqVs, pRqDt, setAdd);
       }
     }
+    //forced renderer:
     pRqDt.setAttribute("nmRnd", "ppl");
     chkOutDated(pRqVs, setAdd);
   }
@@ -464,50 +465,47 @@ public class PrPpl<RS> implements IProcessor {
             }
           }
         }
-        if (!(ppords != null
-          && ppsords != null && ppsords.size() > 0)) {
-          if (ppords != null && ppords.size() > 0) {
-            //proceed PayPal orders:
-            ord = makePplOrds(pRqVs, pRqDt, ppords, cart, CustOrderGdLn.class,
-              CustOrderSrvLn.class, CustOrderTxLn.class);
-            ord.setCurr(ppords.get(0).getCurr());
-            ord.setPur(ppords.get(0).getPur());
-          }
-          if (ppsords != null && ppsords.size() > 0) {
-            //proceed PayPal S.E. orders:
-            if (ord == null) {
-              ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
-                CuOrSeSrLn.class, CuOrSeTxLn.class);
-              ord.setCurr(ppsords.get(0).getCurr());
-              ord.setPur(ppsords.get(0).getPur());
-            } else {
-              CustOrder sord = makePplOrds(pRqVs, pRqDt, ppsords, cart,
-                CuOrSeGdLn.class, CuOrSeSrLn.class, CuOrSeTxLn.class);
-              if (sord.getGoods() != null) {
-                if (ord.getGoods() != null) {
-                  ord.getGoods().addAll(sord.getGoods());
-                } else {
-                  ord.setGoods(sord.getGoods());
-                }
+        if (ppords != null && ppords.size() > 0) {
+          //proceed PayPal orders:
+          ord = makePplOrds(pRqVs, pRqDt, ppords, cart, CustOrderGdLn.class,
+            CustOrderSrvLn.class, CustOrderTxLn.class);
+          ord.setCurr(ppords.get(0).getCurr());
+          ord.setPur(ppords.get(0).getPur());
+        }
+        if (ppsords != null && ppsords.size() > 0) {
+          //proceed PayPal S.E. orders:
+          if (ord == null) {
+            ord = makePplOrds(pRqVs, pRqDt, ppsords, cart, CuOrSeGdLn.class,
+              CuOrSeSrLn.class, CuOrSeTxLn.class);
+            ord.setCurr(ppsords.get(0).getCurr());
+            ord.setPur(ppsords.get(0).getPur());
+          } else {
+            CustOrder sord = makePplOrds(pRqVs, pRqDt, ppsords, cart,
+              CuOrSeGdLn.class, CuOrSeSrLn.class, CuOrSeTxLn.class);
+            if (sord.getGoods() != null) {
+              if (ord.getGoods() != null) {
+                ord.getGoods().addAll(sord.getGoods());
+              } else {
+                ord.setGoods(sord.getGoods());
               }
-              if (sord.getServs() != null) {
-                if (ord.getServs() != null) {
-                  ord.getServs().addAll(sord.getServs());
-                } else {
-                  ord.setServs(sord.getServs());
-                }
-              }
-              if (sord.getTaxes() != null) {
-                if (ord.getTaxes() != null) {
-                  ord.getTaxes().addAll(sord.getTaxes());
-                } else {
-                  ord.setTaxes(sord.getTaxes());
-                }
-              }
-              ord.setTot(ord.getTot().add(sord.getTot()));
-              ord.setTotTx(ord.getTotTx().add(sord.getTotTx()));
-              ord.setSubt(ord.getSubt().add(sord.getSubt()));
             }
+            if (sord.getServs() != null) {
+              if (ord.getServs() != null) {
+                ord.getServs().addAll(sord.getServs());
+              } else {
+                ord.setServs(sord.getServs());
+              }
+            }
+            if (sord.getTaxes() != null) {
+              if (ord.getTaxes() != null) {
+                ord.getTaxes().addAll(sord.getTaxes());
+              } else {
+                ord.setTaxes(sord.getTaxes());
+              }
+            }
+            ord.setTot(ord.getTot().add(sord.getTot()));
+            ord.setTotTx(ord.getTotTx().add(sord.getTotTx()));
+            ord.setSubt(ord.getSubt().add(sord.getSubt()));
           }
         }
         if (ord != null) {
