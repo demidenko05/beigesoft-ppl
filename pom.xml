@@ -100,7 +100,7 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-checkstyle-plugin</artifactId>
-            <version>2.17</version>
+            <version>3.1.0</version>
             <executions>
               <execution>
               <id>checkstyle</id>
@@ -116,16 +116,16 @@
             </configuration>
           </plugin>
           <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>findbugs-maven-plugin</artifactId>
-            <version>3.0.3</version>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-maven-plugin</artifactId>
+            <version>3.1.12.2</version>
             <configuration>
               <excludeFilterFile>findbug-exclude.xml</excludeFilterFile>
             </configuration>
             <executions>
               <execution>
-              <id>findbugs</id>
-              <phase>compile</phase>
+              <id>spotbugs</id>
+              <phase>verify</phase>
               <goals>
                 <goal>check</goal>
               </goals>
@@ -135,12 +135,9 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-pmd-plugin</artifactId>
-            <version>3.6</version>
+            <version>3.12.0</version>
             <configuration>
               <printFailingErrors>true</printFailingErrors>
-              <excludes>
-                <exclude>**/apache/**</exclude>
-              </excludes>
             </configuration>
             <executions>
               <execution>
@@ -160,8 +157,14 @@
   <dependencies>
     <dependency>
       <groupId>org.beigesoft</groupId>
-      <artifactId>beigesoft-accounting-weboio-jar</artifactId>
-      <version>1.1.8</version>
+      <artifactId>beige-acc</artifactId>
+      <version>1.0-SNAPSHOT</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.beigesoft</groupId>
+      <artifactId>beige-web-jar</artifactId>
+      <version>1.0-SNAPSHOT</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
