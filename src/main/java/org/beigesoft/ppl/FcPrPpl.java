@@ -67,16 +67,12 @@ public class FcPrPpl implements IFctPrc {
    * @return requested processor or null
    * @throws Exception - an exception
    */
-  public final IPrc laz(final Map<String, Object> pRvs, //NOPMD
+  public final IPrc laz(final Map<String, Object> pRvs,
     final String pPrNm) throws Exception {
     IPrc rz = this.procs.get(pPrNm);
-    if (rz == null) {
-      synchronized (this) {
-        rz = this.procs.get(pPrNm);
-        if (rz == null && PrPpl.class.getSimpleName().equals(pPrNm)) {
-            rz = crPuPrPpl(pRvs);
-        }
-      }
+    if (rz == null && PrPpl.class.getSimpleName().equals(pPrNm)) {
+      //inner factory, i.e. already synchronized
+      rz = crPuPrPpl(pRvs);
     }
     return rz;
   }
@@ -123,7 +119,7 @@ public class FcPrPpl implements IFctPrc {
    * <p>Getter for fctBlc.</p>
    * @return FctBlc<ResultSet>
    **/
-  public final synchronized FctBlc<ResultSet> getFctBlc() {
+  public final FctBlc<ResultSet> getFctBlc() {
     return this.fctBlc;
   }
 
@@ -131,7 +127,7 @@ public class FcPrPpl implements IFctPrc {
    * <p>Setter for fctBlc.</p>
    * @param pFctBlc reference
    **/
-  public final synchronized void setFctBlc(final FctBlc<ResultSet> pFctBlc) {
+  public final void setFctBlc(final FctBlc<ResultSet> pFctBlc) {
     this.fctBlc = pFctBlc;
   }
 }

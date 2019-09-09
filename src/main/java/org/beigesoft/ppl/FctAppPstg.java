@@ -72,6 +72,67 @@ public class FctAppPstg implements IFctAsm<ResultSet> {
    **/
   private FctBlc<ResultSet> fctBlc;
 
+
+  /**
+   * <p>Only constructor.</p>
+   * @throws Exception - an exception
+   */
+  public FctAppPstg() throws Exception {
+    this.fctBlc = new FctBlc<ResultSet>();
+    this.fctBlc.getFctsAux().add(new FctPostgr());
+    this.fctBlc.getFctsAux().add(new FctDbCp<ResultSet>());
+    this.fctBlc.getFctsAux().add(new FctMail<ResultSet>());
+    this.fctBlc.getFctsAux().add(new FctAcc<ResultSet>());
+    FctWs<ResultSet> fctWs = new FctWs<ResultSet>();
+    HashSet<IFctPrc> fpaws = new HashSet<IFctPrc>();
+    FcPrPpl fpppl = new FcPrPpl();
+    fpppl.setFctBlc(this.fctBlc);
+    fpaws.add(fpppl);
+    fctWs.setFctsPrc(fpaws);
+    this.fctBlc.getFctsAux().add(fctWs);
+    this.fctBlc.getFctsAux().add(new FctFlRep<ResultSet>());
+    Set<IFctPrcEnt> fcsenpr = new HashSet<IFctPrcEnt>();
+    FcEnPrAc<ResultSet> fcep = new FcEnPrAc<ResultSet>();
+    fcep.setFctBlc(this.fctBlc);
+    fcsenpr.add(fcep);
+    FcEnPrTr<ResultSet> fcepws = new FcEnPrTr<ResultSet>();
+    fcepws.setFctBlc(this.fctBlc);
+    fcsenpr.add(fcepws);
+    this.fctBlc.getFctDt().setFctsPrcEnt(fcsenpr);
+    Set<IFctPrcFl> fcspf = new HashSet<IFctPrcFl>();
+    FcPrFlAc<ResultSet> fcpf = new FcPrFlAc<ResultSet>();
+    fcpf.setFctBlc(this.fctBlc);
+    fcspf.add(fcpf);
+    this.fctBlc.getFctDt().setFctrsPrcFl(fcspf);
+    Set<IHlNmClSt> hldsBsEnPr = new LinkedHashSet<IHlNmClSt>();
+    hldsBsEnPr.add(new HlAcEnPr());
+    this.fctBlc.getFctDt().setHldsBsEnPr(hldsBsEnPr);
+    HashSet<IFctPrc> fpas = new HashSet<IFctPrc>();
+    FcPrNtAc<ResultSet> fctPrcNtrAc = new FcPrNtAc<ResultSet>();
+    fctPrcNtrAc.setFctApp(this);
+    fpas.add(fctPrcNtrAc);
+    this.fctBlc.getFctDt().setFctsPrc(fpas);
+    HashSet<IFctPrc> fpads = new HashSet<IFctPrc>();
+    FcPrNtAd<ResultSet> fctPrcNtrAd = new FcPrNtAd<ResultSet>();
+    fctPrcNtrAd.setFctBlc(this.fctBlc);
+    fpads.add(fctPrcNtrAd);
+    this.fctBlc.getFctDt().setFctsPrcAd(fpads);
+    Set<IFctCnToSt> fcsCnToSt = new HashSet<IFctCnToSt>();
+    FcCnToStAi<ResultSet> fcnst = new FcCnToStAi<ResultSet>();
+    fcnst.setFctBlc(this.fctBlc);
+    fcsCnToSt.add(fcnst);
+    this.fctBlc.getFctDt().setFcsCnToSt(fcsCnToSt);
+    Set<IFcFlFdSt> fcsFlFdSt = new HashSet<IFcFlFdSt>();
+    FcFlFdAi<ResultSet> ffdst = new FcFlFdAi<ResultSet>();
+    ffdst.setFctBlc(this.fctBlc);
+    fcsFlFdSt.add(ffdst);
+    this.fctBlc.getFctDt().setFcsFlFdSt(fcsFlFdSt);
+    this.fctBlc.getFctDt().setIsPstg(true);
+    Set<IHlNmClSt> hldsAdEnPr = new LinkedHashSet<IHlNmClSt>();
+    hldsAdEnPr.add(new HlTrEnPr());
+    this.fctBlc.getFctDt().setHldsAdEnPr(hldsAdEnPr);
+  }
+
   /**
    * <p>Get bean in lazy mode (if bean is null then initialize it).</p>
    * @param pRqVs request scoped vars
@@ -126,59 +187,6 @@ public class FctAppPstg implements IFctAsm<ResultSet> {
   @Override
   public final void init(final Map<String, Object> pRvs,
     final IAttrs pCtxAttrs) throws Exception {
-    this.fctBlc = new FctBlc<ResultSet>();
-    this.fctBlc.getFctsAux().add(new FctPostgr());
-    this.fctBlc.getFctsAux().add(new FctDbCp<ResultSet>());
-    this.fctBlc.getFctsAux().add(new FctMail<ResultSet>());
-    this.fctBlc.getFctsAux().add(new FctAcc<ResultSet>());
-    FctWs<ResultSet> fctWs = new FctWs<ResultSet>();
-    HashSet<IFctPrc> fpaws = new HashSet<IFctPrc>();
-    FcPrPpl fpppl = new FcPrPpl();
-    fpppl.setFctBlc(this.fctBlc);
-    fpaws.add(fpppl);
-    fctWs.setFctsPrc(fpaws);
-    this.fctBlc.getFctsAux().add(fctWs);
-    this.fctBlc.getFctsAux().add(new FctFlRep<ResultSet>());
-    Set<IFctPrcEnt> fcsenpr = new HashSet<IFctPrcEnt>();
-    FcEnPrAc<ResultSet> fcep = new FcEnPrAc<ResultSet>();
-    fcep.setFctBlc(this.fctBlc);
-    fcsenpr.add(fcep);
-    FcEnPrTr<ResultSet> fcepws = new FcEnPrTr<ResultSet>();
-    fcepws.setFctBlc(this.fctBlc);
-    fcsenpr.add(fcepws);
-    this.fctBlc.getFctDt().setFctsPrcEnt(fcsenpr);
-    Set<IFctPrcFl> fcspf = new HashSet<IFctPrcFl>();
-    FcPrFlAc<ResultSet> fcpf = new FcPrFlAc<ResultSet>();
-    fcpf.setFctBlc(this.fctBlc);
-    fcspf.add(fcpf);
-    this.fctBlc.getFctDt().setFctrsPrcFl(fcspf);
-    Set<IHlNmClSt> hldsBsEnPr = new LinkedHashSet<IHlNmClSt>();
-    hldsBsEnPr.add(new HlAcEnPr());
-    this.fctBlc.getFctDt().setHldsBsEnPr(hldsBsEnPr);
-    HashSet<IFctPrc> fpas = new HashSet<IFctPrc>();
-    FcPrNtAc<ResultSet> fctPrcNtrAc = new FcPrNtAc<ResultSet>();
-    fctPrcNtrAc.setFctApp(this);
-    fpas.add(fctPrcNtrAc);
-    this.fctBlc.getFctDt().setFctsPrc(fpas);
-    HashSet<IFctPrc> fpads = new HashSet<IFctPrc>();
-    FcPrNtAd<ResultSet> fctPrcNtrAd = new FcPrNtAd<ResultSet>();
-    fctPrcNtrAd.setFctBlc(this.fctBlc);
-    fpads.add(fctPrcNtrAd);
-    this.fctBlc.getFctDt().setFctsPrcAd(fpads);
-    Set<IFctCnToSt> fcsCnToSt = new HashSet<IFctCnToSt>();
-    FcCnToStAi<ResultSet> fcnst = new FcCnToStAi<ResultSet>();
-    fcnst.setFctBlc(this.fctBlc);
-    fcsCnToSt.add(fcnst);
-    this.fctBlc.getFctDt().setFcsCnToSt(fcsCnToSt);
-    Set<IFcFlFdSt> fcsFlFdSt = new HashSet<IFcFlFdSt>();
-    FcFlFdAi<ResultSet> ffdst = new FcFlFdAi<ResultSet>();
-    ffdst.setFctBlc(this.fctBlc);
-    fcsFlFdSt.add(ffdst);
-    this.fctBlc.getFctDt().setFcsFlFdSt(fcsFlFdSt);
-    this.fctBlc.getFctDt().setIsPstg(true);
-    Set<IHlNmClSt> hldsAdEnPr = new LinkedHashSet<IHlNmClSt>();
-    hldsAdEnPr.add(new HlTrEnPr());
-    this.fctBlc.getFctDt().setHldsAdEnPr(hldsAdEnPr);
     //creating/upgrading DB on start:
     Orm<ResultSet> orm = this.fctBlc.lazOrm(pRvs);
     orm.init(pRvs);
