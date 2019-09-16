@@ -277,6 +277,12 @@ public class PrPpl implements IPrc {
       throw new ExcCode(ExcCode.SPAM, "OnlPay not found for buyer ID: "
         + buyer.getIid());
     }
+    if (!onpa.getPayId().equals(paymentID)) {
+      this.hndSpam.handle(pRvs, pRqDt, 100,
+        "OnlPay payId doesn't not match for buyer ID: " + buyer.getIid());
+      throw new ExcCode(ExcCode.SPAM,
+        "OnlPay payId doesn't not match for buyer ID: " + buyer.getIid());
+    }
     long now = new Date().getTime();
     if (now - onpa.getDat().getTime() > 600000) { //10 minutes
       this.hndSpam.handle(pRvs, pRqDt, 100,
