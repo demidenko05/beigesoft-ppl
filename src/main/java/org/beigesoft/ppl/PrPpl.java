@@ -184,6 +184,7 @@ public class PrPpl implements IPrc {
     if (!pRqDt.getReqUrl().toString().toLowerCase().startsWith("https")) {
       throw new Exception("PPL http not supported!!!");
     }
+    boolean dbgSh = getLog().getDbgSh(getClass(), 17000);
     AddStg tastg = (AddStg) pRvs.get("tastg");
     String payerID = pRqDt.getParam("payerID");
     try {
@@ -196,6 +197,9 @@ public class PrPpl implements IPrc {
       } else {
         String pur = pRqDt.getParam("pur");
         if (pur != null) { //cancel/return:
+          if (dbgSh) {
+            getLog().debug(pRvs, PrPpl.class, "Cancel/return...");
+          }
           Long buyrId = Long.parseLong(pRqDt.getParam("buyr"));
           Buyer buyr = new Buyer();
           buyr.setIid(buyrId);
@@ -225,6 +229,8 @@ public class PrPpl implements IPrc {
           } else {
             pRvs.put("pplStat", "return");
           }
+          getLog().info(pRvs, PrPpl.class, "buyer/pid/result " + buyr
+            .getIid() + "/" + onpa.getPayId() + "/" + pRvs.get("pplStat"));
         } else {
           //phase 1, creating payment:
           phase1(pRvs, pRqDt, tastg);
@@ -254,6 +260,10 @@ public class PrPpl implements IPrc {
   public final void phase2(final Map<String, Object> pRvs,
     final IReqDt pRqDt, final AddStg pSetAdd,
       final String pPayerId) throws Exception {
+    boolean dbgSh = getLog().getDbgSh(getClass(), 17002);
+    if (dbgSh) {
+      getLog().debug(pRvs, PrPpl.class, "Phase2...");
+    }
     //phase 2, executing payment:
     Buyer buyer = this.buySr.getAuthBuyr(pRvs, pRqDt);
     if (buyer == null) {
@@ -321,7 +331,7 @@ public class PrPpl implements IPrc {
       pRvs.put("pplStat", "executed");
       ColVals cvs = new ColVals();
       this.srvClVl.put(cvs, "ver", new Date().getTime());
-      this.srvClVl.put(cvs, "stas", EOrdStat.BOOKED.ordinal());
+      this.srvClVl.put(cvs, "stas", EOrdStat.PAYED.ordinal());
       this.rdb.update(CuOr.class, cvs, "PAYM in(9,10) and BUYR="
         + onpa.getBuyr().getIid() + " and PUR=" + onpa.getPur());
       this.rdb.update(CuOrSe.class, cvs, "PAYM in(9,10) and BUYR="
@@ -339,6 +349,10 @@ public class PrPpl implements IPrc {
    **/
   public final void phase1(final Map<String, Object> pRvs,
     final IReqDt pRqDt, final AddStg pSetAdd) throws Exception {
+    boolean dbgSh = getLog().getDbgSh(getClass(), 17001);
+    if (dbgSh) {
+      getLog().debug(pRvs, PrPpl.class, "Phase1...");
+    }
     //it must be request from authorized buyer's browser:
     Cart cart = this.srCart.getCart(pRvs, pRqDt, false, true);
     if (cart != null && !cart.getErr()) {
@@ -608,7 +622,7 @@ public class PrPpl implements IPrc {
   public final void createPay(final Map<String, Object> pRvs,
     final IReqDt pRqDt, final CuOr pOrd,
       final PayMd pPayMd, final SeSel pSel) throws Exception {
-    boolean dbgSh = getLog().getDbgSh(getClass(), 17000);
+    boolean dbgSh = getLog().getDbgSh(getClass(), 17003);
     AcStg as = (AcStg) pRvs.get("astg");
     APIContext apiCon = new APIContext(pPayMd.getSec1(), pPayMd.getSec2(),
       pPayMd.getMde());
@@ -647,6 +661,11 @@ public class PrPpl implements IPrc {
         if (il.getToTx().compareTo(BigDecimal.ZERO) == 1) {
           item.setTax(prn(il.getToTx(), as.getPrDp()));
         }
+        if (dbgSh) {
+          getLog().debug(pRvs, PrPpl.class, "Added item nme/quan/pri/tax/curr: "
+           + item.getName() + "/" + item.getQuantity() + "/" + item.getPrice()
+              + "/" + item.getTax() + "/" + item.getCurrency());
+        }
         items.add(item);
       }
     }
@@ -665,6 +684,11 @@ public class PrPpl implements IPrc {
         if (il.getToTx().compareTo(BigDecimal.ZERO) == 1) {
           item.setTax(prn(il.getToTx(), as.getPrDp()));
         }
+        if (dbgSh) {
+          getLog().debug(pRvs, PrPpl.class, "Added item nme/quan/pri/tax/curr: "
+           + item.getName() + "/" + item.getQuantity() + "/" + item.getPrice()
+              + "/" + item.getTax() + "/" + item.getCurrency());
+        }
         items.add(item);
       }
     }
@@ -680,22 +704,6 @@ public class PrPpl implements IPrc {
     payment.setPayer(payer);
     payment.setTransactions(transactions);
     RedirectUrls redUrls = new RedirectUrls();
-    Map<String, Object> vs = new HashMap<String, Object>();
-    OnlPay onpa = new OnlPay();
-    onpa.setIid(pOrd.getBuyr());
-    this.orm.refrEnt(pRvs, vs, onpa);
-    if (onpa.getIid() == null) {
-      onpa.setIid(pOrd.getBuyr());
-      onpa.setIsNew(true);
-    }
-    onpa.setPur(pOrd.getPur());
-    onpa.setSelr(pSel);
-    onpa.setDat(new Date());
-    if (onpa.getIsNew()) {
-      this.orm.insIdNln(pRvs, vs, onpa);
-    } else {
-      this.orm.update(pRvs, vs, onpa);
-    }
     String pars = "&pur=" + pOrd.getPur() + "&buyr=" + pOrd.getBuyr().getIid();
     if (pSel != null) {
       pars += "&sel" + pSel.getIid().getIid();
@@ -712,6 +720,23 @@ public class PrPpl implements IPrc {
       if (link.getRel().equalsIgnoreCase("approval_url")) {
         pRqDt.setAttr("redirectURL", link.getHref());
       }
+    }
+    Map<String, Object> vs = new HashMap<String, Object>();
+    OnlPay onpa = new OnlPay();
+    onpa.setIid(pOrd.getBuyr());
+    this.orm.refrEnt(pRvs, vs, onpa);
+    if (onpa.getIid() == null) {
+      onpa.setIid(pOrd.getBuyr());
+      onpa.setIsNew(true);
+    }
+    onpa.setPur(pOrd.getPur());
+    onpa.setSelr(pSel);
+    onpa.setPayId(crPay.getId());
+    onpa.setDat(new Date());
+    if (onpa.getIsNew()) {
+      this.orm.insIdNln(pRvs, vs, onpa);
+    } else {
+      this.orm.update(pRvs, vs, onpa);
     }
     pRvs.put("pplPayId", crPay.getId());
     pRvs.put("pplStat", "created");
