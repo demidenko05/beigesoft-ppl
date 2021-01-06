@@ -158,13 +158,13 @@
     <dependency>
       <groupId>org.beigesoft</groupId>
       <artifactId>beige-acc</artifactId>
-      <version>1.1-SNAPSHOT</version>
+      <version>1.1</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.beigesoft</groupId>
       <artifactId>beige-web-jar</artifactId>
-      <version>1.1-SNAPSHOT</version>
+      <version>1.0</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
